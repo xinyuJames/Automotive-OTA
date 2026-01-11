@@ -1,95 +1,146 @@
-# SOTA vs. FOTA: Technical Documentation
+# SOTA vs. FOTA in Automotive OTA Systems
 
-## Introduction to OTA Update Mechanisms
+## OTA update mechanisms in the vehicle software stack
 
-Over-The-Air (OTA) technology enables wireless delivery of software and firmware updates to electronic control units (ECUs) and vehicle systems. Within the OTA ecosystem, two primary update mechanisms exist: Software Over-The-Air (SOTA) and Firmware Over-The-Air (FOTA). These mechanisms represent different scopes of updates within vehicle systems, each serving distinct purposes and operating at different system levels. Both SOTA and FOTA are essential components of modern vehicle maintenance and enhancement strategies, enabling remote updates without requiring physical access to vehicle components.
+Over-The-Air updates in vehicles exist because the software stack inside a modern ECU is not a single thing. It is a layered system where some components behave like “apps and data” and other components behave like “the thing that lets the ECU exist at all.” SOTA and FOTA are names for updating different layers of that stack over a wireless channel, and the distinction matters because each layer has different failure modes, different safety implications, and different architectural requirements for storage, rollback, and validation.
 
-## Software Over-The-Air (SOTA) Architecture and Scope
+A useful mental model is to treat the ECU as a small embedded computer with a chain of trust. At the bottom sits hardware and flash memory. Very early in the boot sequence a minimal bootloader runs, then it hands control to a firmware image that provides the runtime environment and core ECU behavior. Above that, depending on ECU type, you may have application processes, feature modules, configuration datasets, and large content bundles such as maps or media assets. SOTA targets the upper layers where modularity is expected. FOTA targets the foundational image (and sometimes the bootloader itself, under stricter rules) where an interrupted update can brick the unit if recoverability is not engineered in.
 
-Software Over-The-Air refers to the wireless delivery of software components that extend beyond the core ECU firmware. SOTA encompasses a broad range of updateable elements that operate at the application level or as supplementary system components. The types of software components delivered via SOTA include executable applications, configuration data such as maps or calibration files, security patch files, and infotainment content. In infotainment systems specifically, SOTA may deliver audio, video, multimedia data, or application updates that enhance the user experience without modifying core system functionality.
+```mermaid
+flowchart TB
+  subgraph ECU["ECU Software Layers (conceptual)"]
+    HW["Hardware + Flash"] --> BL["Bootloader (root of execution)"]
+    BL --> FW["Firmware Image (OS/RTOS + drivers + core services)"]
+    FW --> APP["Applications / Feature Modules"]
+    FW --> CFG["Configuration & Calibration Data"]
+    APP --> UX["User-Facing Behavior (HMI, services)"]
+  end
 
-Systems supporting SOTA typically implement local storage or file systems specifically designed for remote updates. These storage solutions allow for dynamic modification of software components while maintaining system integrity. When such components are updated wirelessly, the entire process is classified as SOTA. The architecture of SOTA systems generally separates application-level software from core firmware, enabling independent updates without affecting fundamental system operations. This separation provides flexibility for frequent updates of user-facing features and content while maintaining system stability.
+  SOTA["SOTA Update Scope"] -. updates .-> APP
+  SOTA -. updates .-> CFG
+  SOTA -. updates .-> UX
 
-## Firmware Over-The-Air (FOTA) Technical Characteristics
-
-Firmware Over-The-Air focuses specifically on updating the core software image that resides in the non-volatile flash memory of a device or ECU. Firmware represents the foundational software layer that enables basic ECU functionality. This firmware can be delivered as either a complete image replacement or as a differential patch applied to an existing firmware image. The firmware typically exists as a monolithic software package stored in flash memory, which the processor loads during power-up or reset sequences.
-
-The firmware architecture commonly includes three primary components: a bootloader, a basic operating system or runtime environment, and essential built-in applications. The bootloader serves as the initial program that executes when the ECU powers on, responsible for initializing hardware and loading the main firmware. The basic operating system or runtime environment provides the fundamental services necessary for application execution, while built-in applications offer core functionality required for ECU operation. Firmware is fundamental to ECU operation, as without valid firmware, an ECU cannot boot or function. Application-level software operates on top of this firmware layer, creating a hierarchical software architecture.
-
-## Comparative Analysis: SOTA vs FOTA
-
-The distinction between SOTA and FOTA primarily lies in their update scope and system level impact. SOTA operates at the application and content level, updating components that enhance functionality without modifying core system behavior. FOTA, conversely, modifies the fundamental software layer that enables basic ECU operation. This fundamental difference leads to several important distinctions in implementation and risk management.
-
-From a delivery perspective, FOTA updates may involve downloading either a complete firmware image or a differential patch. A full firmware image generally requires more time to download and more time to flash into the target ECU memory compared to differential updates. However, conceptually, the OTA process for updating a full firmware image and applying a firmware patch remains similar. The primary differences relate to update size, duration, and risk management rather than the OTA mechanism itself. Both firmware and software can be updated over the air, depending on system design and safety constraints, with the choice between SOTA and FOTA determined by the nature of the update and its impact on system operation.
-
-```kroki-mermaid {display-width=900px display-align=center}
-graph LR
-    A["OTA Update Types"] --> B["SOTA - Software Over-The-Air"]
-    A --> C["FOTA - Firmware Over-The-Air"]
-  
-    B --> D["Application Level Updates"]
-    B --> E["Content Updates"]
-    B --> F["Configuration Data"]
-  
-    D --> D1["Executable Applications"]
-    E --> E1["Audio/Video Content"]
-    E --> E2["Multimedia Data"]
-    F --> F1["Maps and Calibration Files"]
-    F --> F2["Security Patch Files"]
-  
-    C --> G["Core System Updates"]
-    C --> H["Bootloader"]
-    C --> I["Operating System"]
-  
-    G --> G1["Complete Firmware Image"]
-    G --> G2["Differential Patch"]
-    H --> H1["Hardware Initialization"]
-    H --> H2["System Startup"]
-    I --> I1["Runtime Environment"]
-    I --> I2["Essential Applications"]
+  FOTA["FOTA Update Scope"] -. updates .-> FW
+  FOTA -. sometimes .-> BL
 ```
 
-## System Architecture and Update Flow
+## Software Over-The-Air (SOTA): architecture and operational scope
 
-The implementation of SOTA and FOTA requires distinct architectural considerations within vehicle systems. SOTA-compatible systems typically feature modular storage architectures that allow for independent updating of application components. These systems maintain separation between application storage and core firmware storage, enabling updates to user-facing features without risking fundamental system functionality. The storage subsystems for SOTA are designed for frequent writes and modifications, often employing file systems optimized for dynamic content.
+Software Over-The-Air in automotive contexts refers to delivering updateable software components that are not the core firmware image that boots the ECU. In practice, SOTA includes executable applications, service modules, feature packages, configuration datasets (maps, calibration, parameter tables), and security-related payloads such as policy files, certificate bundles, and application-level patch sets. The common property is that these artifacts can be represented as files or modular packages and applied through an update manager without rewriting the monolithic boot firmware image.
 
-FOTA implementations require more robust and secure storage mechanisms, as firmware corruption can render an ECU inoperable. These systems typically implement dual-bank or redundant storage architectures to ensure update reliability and rollback capabilities. The firmware update process must carefully manage power states and ensure update integrity, as interrupted firmware updates can cause system failure. The bootloader plays a critical role in FOTA systems, managing the update process and ensuring system recoverability.
+SOTA-friendly systems usually expose an internal storage abstraction that behaves like a filesystem or an object store. In high-end infotainment and domain compute platforms this may be a Linux filesystem with A/B partitions and package management semantics. In smaller ECUs it may be a constrained flash filesystem or a vendor-specific “slot” layout. The key requirement is that the update mechanism can add, replace, or remove modules without destabilizing the boot-critical chain. This is why SOTA often updates fast-moving user-facing functionality while keeping the boot foundation stable.
 
-```kroki-mermaid {display-width=900px display-align=center}
+From an OEM operations perspective, SOTA is the workhorse for frequent iteration because it allows a high cadence of improvements with comparatively lower risk. A navigation map update, a media codec fix, a calibration dataset refresh, or a non-boot-critical application patch can usually be scheduled flexibly and may even be applied with reduced downtime, depending on the ECU’s role and system constraints.
+
+A subtle but important point is that SOTA is not “non-critical by definition.” A calibration dataset can affect vehicle behavior, and some vehicles treat calibrations as safety-relevant. The engineering distinction is not “critical vs non-critical,” but “boot image replacement vs modular component update,” which then drives the recoverability and validation strategy.
+
+## Firmware Over-The-Air (FOTA): technical characteristics and why it’s scarier
+
+Firmware Over-The-Air updates the software image that resides in non-volatile flash and is required for the ECU to boot into its intended operational state. In classic embedded ECUs the firmware image is often a largely monolithic build artifact containing the RTOS or runtime environment, drivers, diagnostic services, and core ECU logic. Even when internally modular, it is typically flashed as a single unit (or a small set of tightly coupled partitions). If that image is corrupted or only partially written, the ECU may not start, and the vehicle may lose functions ranging from “annoying” to “unsafe.”
+
+FOTA payloads are commonly delivered as either a full image replacement or a differential update. Full images are conceptually simpler and reduce the risk of patch-application edge cases, but they increase download size, flash time, and power risk. Differential updates reduce bandwidth and time but require careful base-version control, robust patch application, and strong verification that the target is exactly the expected prior image.
+
+Most production-grade FOTA designs rely on a bootloader that can enforce the update protocol, validate cryptographic signatures, and decide which firmware bank to boot. The bootloader becomes the safety net. If the bootloader is itself updated, the system must treat that as a high-assurance event with additional safeguards because it is part of the recovery path.
+
+```mermaid
+flowchart LR
+  subgraph Flash["Typical ECU Flash Layout (simplified)"]
+    BL["Bootloader (immutable or rarely updated)"] --> A["Firmware Bank A"]
+    BL --> B["Firmware Bank B"]
+    NVM["NVM / Config"]:::nvm
+  end
+
+  classDef nvm fill:#fff,stroke:#333,stroke-dasharray: 3 3;
+
+  FOTAFull["FOTA (Full Image)"] -->|writes inactive bank| B
+  FOTADelta["FOTA (Delta Patch)"] -->|patches inactive bank| B
+  BL -->|boot decision after verification| A
+  BL -->|boot decision after verification| B
+```
+
+## Comparative behavior: scope, failure modes, and why the same OTA pipe feels different
+
+SOTA and FOTA can share the same transport channel, the same backend campaign tooling, and the same vehicle gateway. What changes is the in-ECU application model and the risk envelope. SOTA usually modifies artifacts that can be versioned, staged, and rolled back at the application or data layer. If a SOTA update fails, the system typically remains bootable and can often revert by reinstalling the previous application package or toggling an active version pointer.
+
+FOTA modifies the foundational boot image. The principal failure mode is not “feature regression” but “loss of boot.” That is why FOTA demands stricter preconditions, stronger atomicity guarantees, and typically a reboot boundary. In many architectures, SOTA can be applied while the system is running (with service restarts), whereas FOTA requires a controlled transition into an update state, flash programming of an inactive bank, and a secure boot validation at restart.
+
+The time dimension also differs. SOTA packages are often smaller and write to storage designed for frequent changes. FOTA packages are larger and involve flash erase/write cycles on boot partitions, which are time-consuming and power-sensitive.
+
+## System architecture and update flow for SOTA and FOTA
+
+At the fleet level, both SOTA and FOTA are orchestrated as campaigns: the backend identifies a target population by variant, hardware revision, current software inventory, and eligibility rules; a package is selected and made available; vehicles fetch, validate, install, and report status. The vehicle gateway often acts as a traffic director, but the ECU (or its local update agent) must enforce safety conditions and integrity checks.
+
+The flow below shows how the shared OTA channel splits into distinct installation paths once the payload reaches the ECU.
+
+```mermaid
 sequenceDiagram
-    participant Server as OTA Server
-    participant Vehicle as Vehicle Gateway
-    participant ECU as Target ECU
-    participant Storage as Local Storage
+  participant Cloud as OEM OTA Backend
+  participant GW as Vehicle Gateway / Telematics
+  participant ECU as Target ECU
+  participant Store as ECU Local Storage
 
-    Server -->> Vehicle: Update Available Notification
-    Vehicle -->> Server: Update Request
-    Server -->> Vehicle: Update Package Transfer
-    Vehicle -->> ECU: Forward Update Package
+  Cloud-->>GW: Campaign notification + metadata
+  GW-->>Cloud: Inventory / eligibility response
+  Cloud-->>GW: Encrypted + signed update package
+  GW-->>ECU: Transfer package + manifest
 
-    alt SOTA Update
-        ECU ->> Storage: Store Application/Content
-        ECU ->> ECU: Install Software Component
-        ECU -->> Vehicle: SOTA Complete Notification
-    else FOTA Update
-        ECU ->> Storage: Store Firmware Image/Patch
-        ECU ->> ECU: Verify Firmware Integrity
-        ECU ->> ECU: Enter Update Mode
-        ECU ->> Storage: Flash Firmware
-        ECU ->> ECU: Reboot and Validate
-        ECU -->> Vehicle: FOTA Complete Notification
-    end
+  alt SOTA path (apps/data/config)
+    ECU->>Store: Stage package (filesystem/slots)
+    ECU->>ECU: Verify signature + compatibility
+    ECU->>ECU: Install/activate component
+    ECU-->>GW: SOTA install result + version report
+  else FOTA path (boot firmware)
+    ECU->>Store: Stage image/patch (update slot)
+    ECU->>ECU: Verify signature + expected base version
+    ECU->>ECU: Enter controlled update mode
+    ECU->>ECU: Flash inactive bank
+    ECU->>ECU: Post-flash verification (hash/secure-boot metadata)
+    ECU->>ECU: Reboot into new bank
+    ECU-->>GW: FOTA result + bank/version report
+  end
 
-    Vehicle -->> Server: Update Status Report
-
+  GW-->>Cloud: Status + telemetry upload
 ```
 
-## Update Process and Risk Management
+## Storage and rollback design: where the real engineering hides
 
-The OTA update process for both SOTA and FOTA follows similar high-level workflows but differs in implementation details and risk considerations. SOTA updates generally pose lower risk to system stability, as they typically modify application-level components without affecting core system functionality. These updates can often be applied while the system remains operational, minimizing disruption to vehicle functions. The rollback process for SOTA updates is typically straightforward, involving the restoration of previous application versions or configurations.
+SOTA storage is usually engineered for churn. The update agent can keep multiple versions of an app, multiple dataset revisions, or a staged “next” configuration. Rollback can be as simple as switching a symlink, flipping a version pointer, or restoring a previous file set, depending on platform maturity. Even so, safe rollback still needs clear dependency modeling, because an application may expect a matching configuration schema or API version.
 
-FOTA updates require more comprehensive risk management strategies due to their critical nature. These updates often necessitate placing the ECU into a special update mode, during which normal operation is suspended. The update process must ensure power stability throughout the flashing operation, implementing safeguards against interruption. Many FOTA systems implement verification mechanisms to ensure firmware integrity before and after the update process, with rollback capabilities to restore previous firmware versions if issues are detected. The time required for FOTA updates is generally longer than SOTA updates, particularly for full firmware images, due to the larger data sizes and more complex flashing procedures.
+FOTA storage is engineered for atomicity. Dual-bank (A/B) firmware is common because it allows programming an inactive bank while the active one continues to boot a known-good image. The bootloader then selects the new bank only after verification. If the new image fails health checks, the bootloader can revert. Some ECUs implement a “golden image” recovery partition or require a minimal boot stub that can always accept a rescue update. The design goal is to ensure that a power loss during flashing does not destroy the only bootable image.
 
-## Conclusion
+A practical way to describe FOTA robustness is as a state machine with explicit commit points. Until the update is committed, the ECU must be able to boot the old image.
 
-SOTA and FOTA represent complementary update mechanisms within modern vehicle OTA systems, each serving distinct purposes in maintaining and enhancing vehicle functionality. SOTA provides flexibility for frequent updates of applications, content, and configuration data, enabling rapid deployment of new features and improvements. FOTA ensures the core system software remains current, addressing security vulnerabilities and improving fundamental ECU capabilities. Both mechanisms play essential roles in the lifecycle management of vehicle software systems, enabling manufacturers to deliver continuous value to customers throughout the vehicle's operational life. The choice between SOTA and FOTA for a particular update depends on the nature of the changes required and their impact on system operation, with both mechanisms contributing to the overall effectiveness of OTA update strategies in modern vehicles.
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Downloaded: package staged
+  Downloaded --> Verified: signature + compatibility ok
+  Verified --> Flashing: enter update mode
+  Flashing --> Flashed: inactive bank programmed
+  Flashed --> BootTest: reboot into new bank (trial)
+  BootTest --> Committed: health checks pass + commit flag set
+  BootTest --> Rollback: health checks fail or timeout
+  Rollback --> Idle: boot old bank + report failure
+  Committed --> Idle: report success + normal operation
+```
+
+## Risk management: why SOTA is “usually safer,” and why that’s not a free pass
+
+SOTA tends to be lower risk because the ECU remains bootable even if an application component is broken. That practical advantage often enables more aggressive rollout strategies such as staged deployments, canary groups, and rapid iteration. The rollback mechanism can be quick and may not require a full reboot, depending on the software architecture. However, SOTA still needs rigorous controls when the updated artifact influences vehicle behavior, because a configuration file can be as behavior-changing as compiled code.
+
+FOTA requires a more conservative posture. The ECU often must ensure stable power conditions, because flash erase/write cycles are vulnerable to interruption. It must also ensure it is in a safe operational state, because the ECU may be unavailable during flashing and reboot. Integrity verification is mandatory before flashing, and post-flash verification is mandatory before commit. In safety-oriented designs, the ECU additionally performs runtime sanity checks after boot, and only then commits the bank switch.
+
+From an OEM campaign perspective, the control plane for both SOTA and FOTA should enforce traceability, inventory correctness, and auditable records of what was offered, what was installed, and what failed. This is not only good engineering practice; it is increasingly tied to regulatory expectations around software update governance.
+
+## Conclusion: complementary mechanisms that enable fleet-scale lifecycle control
+
+SOTA and FOTA are best understood as complementary layers of the same OTA capability. SOTA provides the agility needed to update applications, content, and configuration at a cadence that matches modern software development. FOTA provides the controlled means to evolve the boot-critical firmware foundation, which is essential for long-term maintenance, security hardening, and deep functional changes that cannot be expressed as higher-level packages. The choice between them is fundamentally determined by what layer must change to achieve the intended effect, and the resulting safety, recoverability, and validation requirements.
+
+## References
+
+- [UN Regulation No. 156: Software Update and Software Update Management System](https://unece.org/transport/vehicle-regulations/unece-regulation-no-156)
+- [ISO 24089: Road vehicles — Software update engineering](https://www.iso.org/standard/68383.html)
+- [ISO/SAE 21434: Road vehicles — Cybersecurity engineering](https://www.iso.org/standard/70918.html)
+- [SAE J3061: Cybersecurity Guidebook for Cyber-Physical Vehicle Systems](https://www.sae.org/standards/content/j3061_201601/)
+- [AUTOSAR Classic Platform](https://www.autosar.org/standards/classic-platform/)
+- [AUTOSAR Adaptive Platform](https://www.autosar.org/standards/adaptive-platform/)
