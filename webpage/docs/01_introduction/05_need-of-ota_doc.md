@@ -1,121 +1,136 @@
 # UN Regulation No. 156: Software Update Management System Framework
 
-## Introduction to OTA Updates and Regulatory Context
+## OTA updates in type approval reality
 
-Modern connected vehicles rely extensively on software systems spanning powertrain control, braking mechanisms, infotainment platforms, and connectivity modules. These software components evolve continuously, necessitating periodic updates to enhance functionality, address security vulnerabilities, and improve performance. Unlike traditional vehicle maintenance performed at service stations, contemporary vehicles support Over-The-Air (OTA) update capabilities, enabling wireless delivery of software modifications directly to vehicle electronic control units (ECUs).
+Connected vehicles now depend on software across domains that regulators historically treated as “hardware behavior.” Powertrain control, braking and steering functions, body controllers, infotainment, telematics, and gateway routing increasingly ship as software-defined systems whose behavior can change after the vehicle is placed on the market. OTA makes those changes operationally feasible by allowing an OEM backend to deliver software packages through a telematics unit or in-vehicle gateway to specific ECUs, with the vehicle executing verification and installation locally.
 
-The OTA infrastructure comprises backend systems maintained by Original Equipment Manufacturers (OEMs), commonly referred to as OTA servers or cloud platforms. These backend systems manage the distribution of software updates, which may include application software, firmware revisions, or security patches. Updates are targeted to specific vehicle models or variants and delivered securely through telematics units or in-vehicle gateways to the appropriate ECUs. The entire process, from backend preparation to vehicle installation, constitutes an OTA update cycle.
+That ability is powerful and dangerous in equal measure. A failed installation can strand an ECU in a non-bootable state, an unsafe precondition can turn a routine update into a safety event, and a compromised update pipeline can become an at-scale remote control channel. UN Regulation No. 156 exists because “we do updates” is not a safety case. Regulators want evidence that updates are governed end-to-end as a controlled system, with traceability of what was installed, on which vehicles, by whose authority, and with what verification.
 
-However, OTA capabilities introduce significant risks that must be systematically managed. Update installations may fail mid-process, malicious actors could attempt to inject unauthorized software, or safety-critical systems might be compromised if updates occur under unsafe operational conditions. These risks necessitate a comprehensive regulatory framework to ensure safety and cybersecurity throughout the software update lifecycle.
+UNECE R156 is therefore less a technical recipe and more a framework for demonstrating that your organization and your vehicle platform jointly constitute a Software Update Management System (SUMS) that is effective in operation, not merely in design. The UNECE regulation text is published by UNECE. ([UNECE][1])
 
-## UN Regulation No. 156 Overview
+## What UNR156 is trying to control
 
-UN Regulation No. 156, issued under UNECE WP.29, establishes a global regulatory framework specifically addressing software updates and the Software Update Management System (SUMS). This regulation serves as a comprehensive rulebook ensuring safety and cybersecurity during software updates for connected vehicles. The regulation does not prescribe specific technical implementations but requires manufacturers to demonstrate that risks are properly identified, assessed, and managed through documented processes and technical controls.
+UNR156 is issued under UNECE WP.29 and defines uniform provisions related to software updates and the Software Update Management System. It doesn’t dictate whether you use Uptane-style metadata, a particular PKI, or a specific backend architecture. Instead, it demands that the manufacturer can demonstrate governance, risk management, and technical controls for software updates throughout the vehicle lifecycle, with particular emphasis on updates that affect type approval relevant systems.
 
-The regulatory timeline shows progressive enforcement beginning around 2021 in regions including Europe, Japan, and China. Starting from 2024, compliance with UNR 156 became mandatory for new vehicle type approvals in contracting regions, with progressive requirements extending to all newly produced vehicles. This regulatory mandate means that OTA functionality, behavior, and update processes must receive approval from regulatory authorities before vehicles can be placed on the market.
+In plain engineering terms, regulators are asking you to treat software updates as a controlled change-management system for a safety- and compliance-relevant product. That includes managing the update supply chain, ensuring that updates are only applied when safe, preventing unauthorized modification or rollback to vulnerable versions, and maintaining auditable records so authorities can verify conformity. The concept of SUMS as a systematic organizational approach is also reflected in the EU’s incorporation of the regulation, including a definition of SUMS. ([EUR-Lex][2])
 
-The regulation groups requirements into three major areas that collectively define the compliance framework. The first area addresses manufacturer requirements, focusing on organizational processes for secure software update management. The second area covers vehicle requirements, specifying technical capabilities that vehicle electronics and ECUs must possess to support secure OTA updates. The third area encompasses software identification requirements, standardizing how software versions and identifiers are defined, recorded, and verified throughout the vehicle lifecycle.
+## The compliance frame: three coupled systems, not one
 
-```kroki-mermaid {display-width=900px display-align=center}
-graph LR
-    A["UN Regulation No. 156"] --> B["Manufacturer Requirements"]
-    A --> C["Vehicle Requirements"]
-    A --> D["Software Identification Requirements"]
-    
-    B --> B1["Organizational Processes"]
-    B --> B2["Software Records Management"]
-    B --> B3["Update Procedures"]
-    
-    C --> C1["ECU Technical Capabilities"]
-    C --> C2["Security Controls"]
-    C --> C3["Update Preconditions"]
-    
-    D --> D1["RxSWIN Implementation"]
-    D --> D2["Version Traceability"]
-    D --> D3["Verification Processes"]
-```
+UNR156 compliance emerges from the coupling of three things: the manufacturer’s SUMS processes, the vehicle’s technical capabilities, and the software identification/traceability model. The regulation organizes requirements in that spirit, because you cannot “secure OTA” with only vehicle-side crypto, and you cannot satisfy type approval with only backend process documents. You need both, plus consistent identification of software versions relevant for approval.
 
-## OTA Update Architecture and Components
-
-The OTA update ecosystem consists of multiple interconnected components working in coordination to deliver software updates securely and reliably. The backend infrastructure maintained by OEMs serves as the central hub for update management, hosting software packages, managing update campaigns, and monitoring deployment status. This backend system communicates with vehicles through network connections, leveraging telematics control units or dedicated in-vehicle gateways as communication interfaces.
-
-Within the vehicle, multiple ECUs form the target destinations for software updates. These ECUs vary in complexity and criticality, ranging from non-safety-critical infotainment systems to safety-critical controllers for braking, steering, and powertrain operations. The OTA architecture must accommodate this diversity while maintaining security and reliability across all update operations.
-
-```kroki-mermaid {display-width=900px display-align=center}
-graph LR
-    Backend["OEM Backend/Cloud Platform"] -- "Secure Update Package" --> Telematics["Telematics Control Unit"]
-    Telematics -- "Distribute to ECUs" --> ECU1["Safety-Critical ECU<br>(ABS, EPS, etc.)"]
-    Telematics -- "Distribute to ECUs" --> ECU2["Powertrain ECU"]
-    Telematics -- "Distribute to ECUs" --> ECU3["Infotainment ECU"]
-    Telematics -- "Distribute to ECUs" --> ECU4["Gateway ECU"]
-    
-    ECU1 -- "Status/Feedback" --> Telematics
-    ECU2 -- "Status/Feedback" --> Telematics
-    ECU3 -- "Status/Feedback" --> Telematics
-    ECU4 -- "Status/Feedback" --> Telematics
-    Telematics -- "Deployment Status" --> Backend
-```
-
-The update process follows a structured flow beginning with preparation at the backend level, where software packages are created, tested, and validated for compatibility with target vehicle configurations. Updates are then packaged with security controls and metadata, including version information, compatibility requirements, and installation instructions. The backend system manages update campaigns, determining which vehicles should receive specific updates based on factors such as vehicle model, current software versions, geographic location, or specific hardware configurations.
-
-## Software Update Management System (SUMS)
-
-Section 7.1 of UN Regulation No. 156 specifically addresses the Software Update Management System at the manufacturer level. SUMS represents the comprehensive framework through which OEMs manage the entire software update lifecycle, from initial development through deployment and post-update verification. The regulation requires that SUMS include robust processes for securely recording software versions and hardware component relationships, ensuring complete traceability throughout the vehicle lifecycle.
-
-A critical aspect of SUMS involves compatibility verification prior to update initiation. OEMs must implement systematic processes to ensure that software updates are compatible with target vehicle configurations, preventing widespread failures across vehicle fleets. This compatibility assessment must consider hardware variations, existing software versions, and potential interactions between different vehicle systems. The regulation specifically addresses how type-approved components are handled when software functionality is added or removed, requiring that such modifications be properly documented and managed within the SUMS framework.
-
-```kroki-mermaid {display-width=300px display-align=center}
+```mermaid
 graph TD
-    Start_Node["Update Campaign Initiation"] --> Compatibility["Compatibility Verification"]
-    Compatibility --> Check{"Compatible?"}
-    Check -- "Yes" --> Security["Security Validation"]
-    Check -- "No" --> Campaign_Abort["Campaign Abort"]
-    Security --> Preconditions["Verify Preconditions<br>(Safe State, Power, etc.)"]
-    Preconditions --> Deploy["Deploy to Target Vehicles"]
-    Deploy --> Monitor["Monitor Installation"]
-    Monitor --> Success{"Successful?"}
-    Success -- "Yes" --> Verify["Post-Update Verification"]
-    Success -- "No" --> Recovery["Recovery Procedures"]
-    Verify --> Process_Complete["Update Complete"]
-    Recovery --> Process_Complete
+  R156["UN Regulation No. 156 (framework)"] --> SUMS["Manufacturer SUMS (governance + processes)"]
+  R156 --> VEH["Vehicle technical requirements (capabilities + controls)"]
+  R156 --> SWID["Software identification (RxSWIN + records)"]
+
+  SUMS --> EVID["Compliance evidence (auditable records)"]
+  VEH --> EVID
+  SWID --> EVID
 ```
 
-The regulation mandates that update preconditions be clearly defined and systematically verified before installation commences. These preconditions include requirements for safe vehicle states, stable power supply conditions, and controlled environments necessary for critical updates. For instance, safety-critical system updates may require the vehicle to be stationary with parking brake engaged, while infotainment updates might permit installation during normal operation with appropriate safeguards.
+This “triad” is the practical lens for designing a compliant OTA program. Every engineering decision eventually has to land in one of these buckets and produce evidence that a type approval authority can review.
 
-SUMS must also address post-update requirements, particularly for safety-related systems. If updates require subsequent actions such as calibration of safety systems like Electronic Power Steering (EPS) or Anti-lock Braking Systems (ABS), these procedures must be documented, validated, and properly managed within the update process. The regulation emphasizes that such post-update activities must be traceable and verifiable to ensure continued vehicle safety and compliance.
+## OTA architecture under UNR156: where the backend ends and the vehicle begins
 
-## Software Identification and RxSWIN
+The regulation assumes a typical connected-vehicle OTA architecture: an OEM backend that orchestrates campaigns and serves update artifacts, a vehicle connectivity element (TCU or gateway) that bridges the external network into the in-vehicle network, and target ECUs that validate and install updates. The regulation’s intent is that security and control are maintained through the entire path, not just at the edges.
 
-UN Regulation No. 156 establishes standardized requirements for software identification to ensure traceability and prevent unauthorized modifications. The regulation introduces the Regulation Software Identification Number (RxSWIN) as a unique identifier representing the software version of electronic control systems relevant for type approval. RxSWIN serves as a critical component in maintaining software traceability throughout the vehicle lifecycle, enabling regulatory authorities to verify that approved software versions are deployed and that unauthorized changes are prevented.
+```mermaid
+graph LR
+  Cloud["OEM backend (campaign + artifacts + records)"] -->|secure delivery| TCU["Telematics / Gateway (OTA client)"]
+  TCU -->|distribution + coordination| ECU_S["Safety ECU (e.g., brake/steer)"]
+  TCU --> ECU_P["Powertrain ECU"]
+  TCU --> ECU_I["Infotainment / IVI ECU"]
+  TCU --> ECU_G["Gateway / Domain controller"]
 
-The software identification requirements extend beyond simple version numbering to encompass comprehensive metadata about software components, their relationships to hardware, and their relevance to vehicle safety and emissions systems. Each software component must be uniquely identifiable, with clear documentation of its functionality, safety relevance, and compatibility requirements. This information must be maintained throughout the vehicle's operational life and made available for regulatory inspection as needed.
+  ECU_S -->|status + inventory| TCU
+  ECU_P -->|status + inventory| TCU
+  ECU_I -->|status + inventory| TCU
+  ECU_G -->|status + inventory| TCU
+  TCU -->|fleet reporting| Cloud
+```
 
-Vehicles must implement technical controls to prevent unauthorized software modifications while supporting restoration mechanisms where required by the regulation. These controls include cryptographic verification of software authenticity and integrity, secure boot processes, and runtime integrity monitoring. The regulation requires that vehicles enforce defined prerequisites for safe software updates, ensuring that modifications cannot occur under conditions that might compromise vehicle safety or security.
+UNR156 doesn’t require that every ECU talks directly to the cloud; it requires that the update system as implemented ensures authenticity, integrity, safe execution, traceability, and controlled change management. The architectural patterns OEMs use to achieve that vary, but the compliance questions remain stubbornly similar.
 
-## Vehicle Requirements and Technical Controls
+## SUMS: the manufacturer-side system that regulators actually care about
 
-The vehicle requirements section of UN Regulation No. 156 specifies technical capabilities that must be implemented to support secure OTA updates. Electronic control units must possess the ability to verify software authenticity and integrity before installation, using cryptographic mechanisms to ensure that only authorized software from legitimate sources can be installed. This verification process must occur automatically and transparently, with clear error handling and reporting mechanisms for failed verifications.
+Section 7.1 of the regulation focuses on the Software Update Management System as a manufacturer capability. Conceptually, SUMS is the operating system for your OTA program: it defines how you decide an update exists, how you assess risk, how you validate compatibility, how you authorize release, how you control distribution, how you record what happened, and how you react when the world behaves badly.
 
-Vehicles must implement robust security controls to protect against unauthorized software modifications, including protection against rollback attacks where malicious actors attempt to install older, potentially vulnerable software versions. The regulation requires that vehicles maintain secure records of installed software versions, enabling detection of unauthorized changes and supporting forensic analysis when security incidents occur. These records must be protected against tampering and made available for regulatory compliance verification.
+A compliant SUMS ties together software configuration management, hardware/software compatibility rules, cybersecurity risk management, safety impact assessment, and operational monitoring into one governed process. The key subtlety is that “process” here is not paperwork; it must be reflected in tooling and controls. If a manufacturer claims that only approved packages can be installed, then the signing process, key management, manifest enforcement, and backend authorization flows must make it true in practice.
 
-The technical requirements also address update reliability and failure handling. Vehicles must implement mechanisms to detect update failures, maintain system stability during interrupted updates, and recover gracefully from failed installation attempts. For safety-critical systems, additional safeguards must be implemented to ensure that update failures cannot compromise vehicle safety, including fallback mechanisms and safe state transitions.
+A useful way to view SUMS is as a gated pipeline where each gate produces evidence. Compatibility gates ensure the right vehicles get the right packages. Security gates ensure only authentic packages exist and can be accepted. Operational safety gates ensure installation occurs only under preconditions. Post-update gates ensure the vehicle ended in a conforming state.
 
-## Compliance and Type Approval Process
+```mermaid
+flowchart TD
+  A["Campaign initiation (issue, feature, vulnerability)"] --> B["Impact assessment (safety + compliance + cyber)"]
+  B --> C["Compatibility determination (variants + HW/SW matrix)"]
+  C --> D["Package creation (artifact + metadata + instructions)"]
+  D --> E["Security controls (signing + authorization policy)"]
+  E --> F["Deployment planning (phasing + monitoring rules)"]
+  F --> G["Vehicle-side precondition enforcement"]
+  G --> H["Installation + verification + commit/rollback"]
+  H --> I["Fleet reporting + audit record retention"]
+  I --> J["Post-deployment monitoring + incident response loop"]
+  J --> B
+```
 
-Compliance with UN Regulation No. 156 is demonstrated through a comprehensive type approval process where regulatory authorities review evidence submitted by manufacturers. This evidence must demonstrate compliance with safety and cybersecurity requirements at both the backend SUMS level and the vehicle implementation level. The approval process involves detailed documentation of organizational processes, technical implementations, and security controls, along with evidence of testing and validation activities.
+This is the “living system” aspect: SUMS is expected to keep working as threats evolve, suppliers change, and new vehicle variants appear.
 
-The regulation includes approximately thirty individual requirements that collectively define compliance expectations. These requirements cover aspects such as risk assessment methodologies, security control implementation, update process management, and incident response procedures. Manufacturers must provide detailed evidence addressing each requirement, demonstrating how their systems and processes meet the specified criteria.
+## Preconditions: why “safe to install” is a regulated concept
 
-Type approval is not a permanent status but subject to renewal and ongoing compliance verification. The regulation includes provisions for vehicle modifications after type approval, defining conditions for conformity, non-conformity, and circumstances requiring approval updates or extensions. Manufacturers must maintain continuous compliance monitoring and report significant changes that might affect the approved status of their OTA systems.
+UNR156 pushes OEMs to define and enforce preconditions for updates, especially for systems with safety relevance. Preconditions are the engineering translation of “don’t do dangerous maintenance while driving.” For safety ECUs, that may mean vehicle stationary, parking brake applied, stable voltage, and a controlled update mode with limited functionality. For infotainment, it may mean less restrictive rules, but still rules that prevent corruption, privacy violations, or customer lockout.
 
-The regulation also specifies consequences for non-compliance, including potential penalties and requirements for remediation. These provisions ensure that manufacturers maintain ongoing compliance throughout the vehicle lifecycle and address any identified deficiencies promptly and effectively.
+The reason regulators care is that OTA turns installation into a distributed autonomous act. If the backend can cause installation, then the vehicle must be designed to refuse installation when unsafe. This is also where your vehicle-side state machine becomes part of the compliance story: authorities want to see that you have defined when an update is allowed, how you detect the allowed state, and what you do when the state changes mid-process.
 
-## Applicability and Scope
+## Software identification and RxSWIN: traceability that survives time and supply chains
 
-UN Regulation No. 156 applies to vehicles used for the transport of passengers and goods, including trailers, across specified vehicle categories defined by UNECE. The regulation covers vehicle categories such as M (passenger vehicles), N (goods vehicles), O (trailers), and other specified categories. For example, category M1 refers to passenger vehicles, M2 to buses, and category T to agricultural and forestry tractors.
+A core compliance pillar in UNR156 is software identification, and the regulation introduces the idea of a Regulation Software Identification Number, commonly referenced as RxSWIN in industry discussions. The “X” is meant to tie software identification to regulation-relevant systems, so authorities can verify that the installed software corresponds to approved behavior. The practical outcome is that vehicles must be able to report software identifiers, and manufacturers must be able to map those identifiers to artifacts, approvals, and compatibility constraints.
 
-The applicability of UNR 156 is conditional on vehicles supporting OTA update capabilities. If a vehicle within the specified categories supports OTA updates, the requirements of UNR 156 must be fulfilled. This conditional applicability ensures that the regulation focuses on vehicles and systems where OTA functionality presents potential safety and cybersecurity risks.
+This requirement exists because OTA makes software fluid. If software can change post-approval, regulators need a stable identifier that can be read and checked, and an OEM needs a record system that can prove what was installed and why it is still conforming. The UNECE text is the authoritative source for the regulation’s software update and identification provisions. ([UNECE][1])
 
-The regulation includes annexes covering declarations of compliance, approval forms, and approval marks. These documents standardize the format for manufacturer declarations, specify required information for approval submissions, and define the format for approval marks that must be displayed on compliant vehicles. The annexes also address procedures for approval extensions, refusals, and certification formats, providing a comprehensive framework for regulatory compliance management.
+## Vehicle technical requirements: authenticity, integrity, anti-rollback, and recoverability
 
-In summary, UN Regulation No. 156 establishes a comprehensive regulatory framework for OTA software updates in vehicles, requiring manufacturers to implement robust processes and technical controls to ensure safety and security throughout the update lifecycle. The regulation's requirements span organizational processes, vehicle technical capabilities, and software identification standards, collectively ensuring that OTA updates can be performed safely and securely in modern connected vehicles.
+UNR156 expects the vehicle to enforce technical controls that make the SUMS promises real. Authenticity and integrity checks are the obvious ones: the ECU or OTA client must verify that a package came from an authorized source and wasn’t modified. In practice, that implies cryptographic signatures, a trust anchor, and secure handling of keys. Anti-rollback protections matter because an attacker (or even a misconfigured campaign) could try to install an older but vulnerable version, effectively reintroducing known weaknesses. Robust systems bind version acceptance to monotonic counters, signed metadata, or policy rules enforced in a hardware-backed trust domain.
+
+Recoverability is the other quiet giant. Vehicles must handle failed updates without turning into expensive yard art. That typically means A/B firmware banks or redundant partitions for FOTA-like updates, plus explicit commit semantics so the system only switches over after post-install checks succeed.
+
+A compliance-friendly way to describe vehicle-side behavior is as a commit/rollback state machine, because that makes safety arguments crisp: until “commit,” the vehicle can always return to a known-good state.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Staged: package downloaded
+  Staged --> Verified: signature + compatibility ok
+  Verified --> Installing: safe state + power ok
+  Installing --> TrialBoot: reboot into new software
+  TrialBoot --> Committed: health checks ok + commit flag
+  TrialBoot --> Rollback: health checks fail or timeout
+  Rollback --> Idle: revert to previous version + report
+  Committed --> Idle: report success + update records
+```
+
+## Type approval: what you actually submit and what you must keep proving
+
+UNR156 compliance is demonstrated through type approval evidence. Authorities review manufacturer documentation and technical descriptions that show SUMS exists, is governed, and is implemented in a way that controls risk. They also review vehicle capabilities and software identification behavior. The point is not to freeze your implementation forever; the point is to ensure that changes remain controlled and auditable, and that the manufacturer can show continued conformity.
+
+Practically, this pushes OEMs to treat logging and evidence as first-class outputs. The backend must retain campaign intent, eligibility logic, software artifacts, signing records, and deployment outcomes. The vehicle must produce install status, version inventory, and verification results. When something goes wrong, the manufacturer must be able to reconstruct what happened and demonstrate corrective action.
+
+UNR156 also sits in a family of closely related cybersecurity governance expectations. UNECE R155 defines cybersecurity and the concept of a Cyber Security Management System (CSMS), and it is typically treated as the companion regulation to R156 for connected-vehicle security governance. ([UNECE][3])  ISO/SAE 21434 provides the engineering risk-management framework many organizations use to implement those governance requirements in product development and lifecycle operations. ([ISO][4])  ISO 24089 focuses specifically on software update engineering processes across organizational and project levels, and it aligns naturally with SUMS-style requirements. ([ISO][5])
+
+## Applicability and scope: when the regulation “switches on”
+
+UNR156 applies to vehicle categories under UNECE type approval where software update capability exists for relevant systems. The key trigger is not “the car has a modem,” but “software can be updated,” especially for systems that can affect type approval relevant behavior. That conditionality is why software update capability itself becomes a regulated feature: if you ship it, you must govern it.
+
+## References
+
+- **UN Regulation No. 156**: [Software update and software update management system][1]
+- **EUR-Lex 42021X0388**: [EU incorporation and SUMS definition context][2]
+- **UN Regulation No. 155**: [Cyber security and cyber security management system][3]
+- **ISO/SAE 21434:2021**: [Road vehicles — Cybersecurity engineering][4]
+- **ISO 24089:2023**: [Road vehicles — Software update engineering][5]
+
+[1]: https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update "UN Regulation No. 156 - Software update and software update management"
+[2]: https://eur-lex.europa.eu/eli/reg/2021/388/oj/eng "EUR-Lex - 42021X0388 - EN - EUR-Lex"
+[3]: https://unece.org/transport/documents/2021/03/standards/un-regulation-no-155-cyber-security-and-cyber-security "UN Regulation No. 155 - Cyber security and cyber security"
+[4]: https://www.iso.org/standard/70918.html "ISO/SAE 21434:2021 - Road vehicles — Cybersecurity engineering"
+[5]: https://www.iso.org/standard/77796.html "ISO 24089:2023 - Road vehicles — Software update engineering"
