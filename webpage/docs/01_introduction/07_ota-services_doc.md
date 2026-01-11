@@ -1,87 +1,169 @@
-# OTA Services Technical Documentation
+# OTA Services
 
-## Introduction to OTA Service Architecture
+## OTA services as a closed-loop cyber-physical platform
 
-Over-the-Air (OTA) platforms provide a comprehensive suite of connected vehicle services that enable continuous vehicle improvement and enhanced ownership experiences. These services leverage vehicle telematics and connectivity to deliver real-time monitoring, predictive capabilities, and software-based feature enhancements. The OTA ecosystem serves multiple stakeholders including individual vehicle owners, fleet operators, and original equipment manufacturers (OEMs), each benefiting from different aspects of the connected vehicle capabilities.
+An automotive OTA platform is best understood as a closed-loop control system that happens to include software updates. Vehicles generate telemetry and diagnostic signals, a cloud platform turns those signals into decisions, and the platform then either delivers information to humans or sends commands and software back to vehicles. When this loop is engineered well, it turns “connected” from a marketing adjective into an operational capability: continuous health visibility, prediction of failures before they occur, fleet-wide optimization, and controlled software evolution (SOTA/FOTA) with auditability.
 
-The fundamental architecture of OTA services centers around the collection and analysis of vehicle data through embedded telematics systems. This data flows through cloud-based platforms where it undergoes processing, analysis, and action generation. The results are then delivered back to vehicles or presented to stakeholders through various interfaces, creating a continuous feedback loop that enables proactive vehicle management and service delivery.
+The architecture usually begins in the vehicle with a telematics and gateway layer that aggregates signals from ECUs, normalizes them, applies local policy, and transmits them to the backend. In the backend, ingestion, storage, analytics, and service orchestration convert raw data into service outcomes. Those outcomes are delivered through stakeholder-specific interfaces, including mobile apps for individual owners, dashboards and APIs for fleets, and engineering/operations tooling for OEMs.
 
-```kroki-mermaid {display-width=900px display-align=center}
+```mermaid
 graph TD
-    A["Vehicle Telematics System"] --> B["OTA Cloud Platform"]
-    B --> C["Data Analytics Engine"]
-    C --> D["Service Delivery Layer"]
-    D --> E["Remote Diagnostics"]
-    D --> F["Predictive Maintenance"]
-    D --> G["Fleet Management"]
-    D --> H["Software Updates (FOTA/SOTA)"]
-    D --> I["Connected Services"]
-    E --> J["Vehicle Owner Interface"]
-    F --> K["Service Scheduling System"]
-    G --> L["Fleet Manager Dashboard"]
-    H --> M["Vehicle ECU Updates"]
-    I --> N["Mobile Applications"]
+  V["Vehicle ECUs + Sensors"] --> GW["Gateway/TCU (telemetry + command broker)"]
+  GW -->|uplink| Cloud["OTA Cloud Platform (ingest + storage + security)"]
+  Cloud --> A["Analytics & Rules Engine"]
+  A --> S["Service Orchestration Layer"]
+
+  S --> RD["Remote Diagnostics"]
+  S --> PM["Predictive Maintenance"]
+  S --> FM["Fleet Management"]
+  S --> SU["Software Updates (SOTA/FOTA)"]
+  S --> CS["Connected Services (access, payments, voice, commerce)"]
+
+  RD --> UI1["Owner App / Web Portal"]
+  PM --> UI2["Service Scheduling / Dealer Integration"]
+  FM --> UI3["Fleet Dashboard / APIs"]
+  SU --> GW
+  CS --> UI1
+  CS --> GW
 ```
 
-## Remote Diagnostics Service
+A key practical point is that this is not one monolith. Even when a vendor markets “an OTA platform,” the deployed system is typically a federation of services with different latency and reliability goals. Remote lock/unlock wants near-real-time command delivery, predictive maintenance wants correct long-horizon statistics, software update delivery wants high integrity and strict governance, and fleet analytics wants scalable data warehousing. Treating these as one pipeline is how teams end up with fragile systems and miserable on-call rotations.
 
-Remote diagnostics, also known as self-service diagnostics, represents a cornerstone service within the OTA platform that directly benefits vehicle owners through continuous health monitoring capabilities. This service enables real-time access to critical vehicle parameters including battery status, brake system condition, brake pad life, tire pressure monitoring, GPS location data, and various operational metrics. The continuous stream of diagnostic data provides vehicle owners with unprecedented visibility into their vehicle's health status without requiring physical inspection visits.
+## Remote diagnostics as a telemetry-to-decision service
 
-The technical implementation of remote diagnostics relies on sensors and control units throughout the vehicle that collect operational data and transmit it through the telematics module to the OTA platform. The platform processes this data using standardized diagnostic protocols and presents it through user-friendly interfaces, typically mobile applications or web portals. Vehicle owners can monitor their vehicle's condition, receive alerts for potential issues, and access historical performance data.
+Remote diagnostics, often marketed as self-service diagnostics, starts with the idea that many “service visits” are fundamentally information gaps. Owners and fleet operators want to know whether a symptom is urgent, whether the vehicle is safe to continue operating, and what the likely remediation is. Technically, this service is a structured interpretation pipeline that converts ECU signals and diagnostic trouble codes into a human-facing narrative with confidence levels, severity classification, and recommended actions.
 
-From an OEM perspective, the aggregated diagnostic data from thousands of vehicles enables sophisticated analysis of vehicle performance across different usage patterns and driving behaviors. This analysis supports the development of improved aftermarket offerings and service recommendations that are specifically tailored to customer behavior patterns. The correlation between vehicle performance data and usage profiles helps OEMs optimize maintenance intervals, improve component durability, and enhance overall vehicle reliability based on real-world operating conditions rather than theoretical models.
+The vehicle side collects health signals from multiple sources, including standardized diagnostic data (where available), ECU-specific status registers, and sensor-derived metrics such as tire pressure and battery state. That data is transported via the connectivity layer to the backend, where it is mapped into canonical models, correlated with context such as ambient temperature or driving state, and presented in a consumable form. The same pipeline supports OEM engineering by enabling population-level analysis and by revealing which failure modes correlate with usage patterns, geography, or component suppliers.
 
-## Predictive Maintenance Capabilities
+This is also where privacy and access control stop being “legal boilerplate” and become a technical requirement. Remote diagnostics implies collecting and storing data that may include location, driving behavior proxies, and vehicle identifiers. In practice, OTA service platforms increasingly align with “extended vehicle” style access models where vehicle data is made accessible via controlled web services with explicit security and authorization concepts; the ISO 20078 extended vehicle web services family is one standardized approach in this direction. ([ISO][1])
 
-Predictive maintenance emerges as a transformative capability when telematics systems are integrated with OTA platforms, fundamentally shifting vehicle maintenance from reactive to proactive models. This service leverages continuous vehicle usage data collection and advanced analytics to forecast maintenance requirements before component failures occur. The system analyzes patterns in vehicle operation, environmental conditions, and historical performance data to estimate component wear rates and predict optimal replacement intervals.
+```mermaid
+sequenceDiagram
+  participant ECU as ECUs/Sensors
+  participant GW as Gateway/TCU
+  participant Cloud as OTA Cloud
+  participant Dx as Diagnostic Normalizer
+  participant App as Owner/Fleet UI
 
-The predictive maintenance workflow begins with data collection from various vehicle systems, including powertrain, braking, suspension, and electronic control units. This data is transmitted to the OTA platform where machine learning algorithms process the information to identify degradation patterns and failure precursors. The system considers multiple variables including mileage, operating temperatures, load conditions, driving style, and environmental factors to generate accurate maintenance predictions.
-
-When the predictive maintenance system identifies potential issues or approaching service intervals, it can automatically trigger OTA updates to address software-related problems or calibrate systems for improved performance. This capability extends component life by optimizing operating parameters and reduces unexpected failures through early intervention. The integration with remote diagnostics provides a comprehensive view of vehicle health, enabling maintenance scheduling that minimizes vehicle downtime and maximizes operational availability. For electric vehicles, predictive maintenance includes specialized analysis of battery health, charging patterns, and energy consumption to optimize battery longevity and performance.
-
-```kroki-mermaid {display-width=900px display-align=center}
-graph TD
-    A["Vehicle Data Collection"] --> B["Telematics Transmission"]
-    B --> C["OTA Platform Analytics"]
-    C --> D["Pattern Recognition"]
-    D --> E["Wear Rate Calculation"]
-    E --> F["Maintenance Prediction"]
-    F --> G{"Action Required?"}
-    G -- "Yes" --> H["OTA Update Deployment"]
-    G -- "Yes" --> I["Service Scheduling"]
-    G -- "No" --> J["Continue Monitoring"]
-    H --> K["System Calibration"]
-    I --> L["Maintenance Notification"]
+  ECU->>GW: Health signals + DTC snapshots
+  GW->>Cloud: Secure uplink (telemetry batch/stream)
+  Cloud->>Dx: Normalize + correlate + enrich
+  Dx->>Dx: Severity + recommendation inference
+  Dx-->>App: Health view + alerts + history
+  App-->>Cloud: User action (schedule, consent, share report)
 ```
 
-## Fleet Management Services
+When remote diagnostics is mature, it becomes a bidirectional service. The platform doesn’t only “display data,” it can request targeted snapshots, trigger ECU self-tests where allowed, and guide the vehicle into controlled diagnostic states. That’s a design choice that must be governed carefully because adding remote actuation expands the attack surface and increases the need for strong authorization boundaries.
 
-Fleet management represents one of the most impactful applications of OTA technology, addressing the complex operational challenges of managing large vehicle populations. OTA platforms provide fleet operators with centralized control and monitoring capabilities that dramatically improve operational efficiency and reduce management overhead. The service enables simultaneous monitoring of hundreds or thousands of vehicles through a unified dashboard interface, providing real-time visibility into fleet status, vehicle health, and operational metrics.
+## Predictive maintenance as a multi-timescale estimation problem
 
-The fleet management capabilities extend beyond basic tracking to include comprehensive maintenance optimization through predictive maintenance algorithms applied across the entire fleet. This approach enables fleet managers to coordinate maintenance schedules that minimize vehicle downtime while maximizing operational availability. The system can automatically schedule service appointments based on predicted maintenance needs, vehicle utilization patterns, and service center capacity, creating an optimized maintenance workflow that reduces total cost of ownership.
+Predictive maintenance is what happens when remote diagnostics stops being episodic and becomes continuous. The platform is no longer answering “what is wrong now,” but estimating “what will be wrong soon,” and “how should we act to prevent it.” The engineering challenge is that vehicles degrade across multiple timescales. Some failures have rapid onset (a sensor becomes intermittent), others are slow wear processes (brake pads, bushings), and others are statistical risk accumulations driven by environment (corrosion exposure) or driving style.
 
-OTA platforms support rapid deployment of software updates across entire fleets, eliminating the need for physical vehicle visits to service centers. This capability becomes particularly valuable for deploying security patches, performance improvements, or new feature sets that enhance fleet productivity. Fleet managers can also leverage OTA capabilities for inventory management through detailed vehicle utilization reports and operational planning tools that optimize vehicle allocation based on usage patterns and business requirements.
+A robust predictive maintenance pipeline usually has three layers. The first is data engineering that produces stable, comparable features across vehicle variants. The second is model logic that estimates degradation or failure probability. The third is orchestration logic that translates predictions into actions: notifying an owner, scheduling service for a fleet, pushing a calibration update, or changing an operating strategy that reduces stress on a component.
 
-Fleet owner analytics provide additional value through sophisticated analysis of driving behavior, vehicle utilization patterns, and efficiency metrics. These analytics support business model optimization by identifying opportunities for operational improvements, cost reduction, and service enhancement. The platform also enables secure keyless access systems that simplify vehicle sharing and driver management, comprehensive data logging for compliance and reporting requirements, and behavior analysis tools that support driver training and safety programs.
+The most “OTA-ish” part is that predictive maintenance can close the loop with software actions. If the platform detects a degradation pattern that can be mitigated by changing control parameters or updating diagnostic thresholds, it can initiate an OTA deployment to adjust behavior, extend component life, or improve detection quality. This is where OTA services become an operational control plane, not just a communication system.
 
-## Software Update Services (FOTA and SOTA)
+```mermaid
+graph LR
+  D["Fleet telemetry + diagnostics"] --> F["Feature generation (normalized signals)"]
+  F --> M["Degradation / failure-risk models"]
+  M --> P["Prognosis (time-to-service, risk, confidence)"]
+  P --> O["Orchestration (what to do)"]
+  O --> N["Notify owner/fleet"]
+  O --> S["Schedule service"]
+  O --> U["Deploy OTA update (calibration/logic patch)"]
+  U --> D
+```
 
-Firmware-over-the-Air (FOTA) and Software-over-the-Air (SOTA) services form the foundational layer of the OTA platform, enabling continuous vehicle improvement through remote software delivery. These services go beyond traditional update mechanisms by providing granular control over software deployment, rollback capabilities, and update scheduling that respects vehicle usage patterns. The update management system ensures software integrity through cryptographic verification, staged deployment processes, and comprehensive rollback mechanisms that protect vehicle safety and reliability.
+If your organization is operating in a regulated type-approval environment, the moment predictive maintenance starts triggering software updates you are effectively touching software update governance obligations. ISO 24089 describes requirements and recommendations for software update engineering for road vehicles at organizational and project levels, and it is highly relevant once “service logic” can initiate update campaigns. ([ISO][2])
 
-The FOTA service specifically targets vehicle control units and embedded systems, delivering critical updates for powertrain control, safety systems, and vehicle dynamics management. These updates require careful validation and staged deployment to ensure they do not affect vehicle safety or performance. The SOTA service focuses on infotainment systems, connectivity modules, and user-facing applications that can be updated more frequently with less stringent safety requirements. Both services support differential updates that minimize data transmission requirements and reduce update times.
+## Fleet management as distributed operations, not just tracking
 
-Beyond basic maintenance updates, the software delivery platform enables the continuous introduction of new features and user experience enhancements. Even small software patches can significantly improve digital driving features, safety functionality, and overall system behavior. The platform supports feature flagging and A/B testing capabilities that allow OEMs to gradually introduce new functionality and monitor adoption rates before full deployment. This approach enables rapid innovation while maintaining system stability and user satisfaction.
+Fleet management is where OTA services typically deliver the clearest ROI because fleets experience cost as downtime and operational friction. Technically, fleet services are the combination of centralized visibility, policy enforcement, and coordinated action across a vehicle population. The platform aggregates status, utilization, and health across the fleet and turns that into decisions about routing, scheduling, maintenance timing, and software baseline management.
 
-The update infrastructure also supports personalization features such as region-specific functionality, pre-conditioning capabilities including pre-cooling and pre-heating, and feature activation through software plugins. This modular approach to feature delivery allows OEMs to customize vehicle capabilities for different markets and customer segments without requiring hardware variations. The system maintains comprehensive update histories and supports rollback capabilities that ensure vehicles can be restored to previous software versions if issues are discovered.
+The most important distinction from “consumer connected services” is that fleets care about consistency and control. A fleet wants to know which vehicles are on which software versions, whether any are out of compliance, and whether an update campaign will disrupt operations. It also wants predictable maintenance windows and evidence trails for auditing and insurance. That pushes fleet OTA services toward strong segmentation and staged rollouts, where vehicles can be grouped by geography, mission criticality, hardware configuration, or business unit, and where campaign policies can enforce timing constraints.
 
-## Additional Connected Services
+```mermaid
+sequenceDiagram
+  participant Fleet as Fleet Ops
+  participant Cloud as OTA Platform
+  participant GW as Vehicles (TCU/Gateway)
 
-The OTA platform enables a broad ecosystem of connected services that extend the vehicle's functionality beyond traditional transportation. Digital wallet integration allows vehicles to participate in payment ecosystems, enabling automated toll payments, parking fees, and charging station transactions without requiring driver intervention. The platform supports secure payment processing through tokenization and multi-factor authentication, ensuring financial transactions maintain the highest security standards.
+  Fleet->>Cloud: Define policy (maintenance windows, groups)
+  Cloud->>GW: Collect inventory + utilization telemetry
+  Cloud->>Cloud: Optimize schedule + identify at-risk vehicles
+  Cloud-->>Fleet: Dashboard recommendations + KPIs
+  Cloud->>GW: Execute actions (update campaign / remote config)
+  GW-->>Cloud: Status reports + exceptions
+  Cloud-->>Fleet: Compliance evidence + operational outcomes
+```
 
-Biometric authentication services enhance vehicle security and personalization by using fingerprint scanners, facial recognition, or other biometric identifiers to verify driver identity and enable personalized vehicle settings. These systems integrate with the OTA platform to continuously update authentication algorithms and security protocols, protecting against emerging threats while providing seamless access for authorized users.
+Fleet management is also where security requirements become more operational than theoretical. A compromised fleet dashboard is effectively a fleet-wide control surface. This is one reason secure update frameworks and role separation matter. Uptane, for example, is designed as a compromise-resilient secure software update framework for automobiles, emphasizing resilience even if parts of the update infrastructure are attacked. ([uptane.org][3])
 
-Remote vehicle access capabilities have become standard features in modern connected vehicles, enabling functions such as door locking and unlocking, remote start, climate control activation, and vehicle status checking through mobile applications. These services rely on the OTA infrastructure for secure command delivery and status reporting, maintaining robust security through encrypted communications and multi-layer authentication protocols.
+## Software update services as the platform’s safety-critical core
 
-Voice-based services leverage natural language processing and cloud-based AI to provide drivers with hands-free access to vehicle controls, navigation, entertainment, and communication features. The OTA platform enables continuous improvement of voice recognition accuracy and expands command capabilities through regular software updates. In-car commerce integration transforms the vehicle into a shopping platform, allowing drivers to order products, make reservations, and access services directly through the infotainment system.
+FOTA and SOTA capabilities are the foundational layer that many other OTA services lean on, because the platform needs the ability to fix issues and evolve features remotely. What distinguishes the “software update service” inside an OTA platform from a simple updater is governance, safety gating, recoverability, and evidence. A mature update service manages package creation and signing, compatibility targeting, differential delivery, staged rollouts, vehicle-side preconditions, post-install health checks, rollback, and compliance logging.
 
-The platform also supports advanced safety features such as theft protection systems that use GPS tracking, geofencing, and remote immobilization capabilities to recover stolen vehicles. Vehicle tracking services provide real-time location monitoring and historical route analysis, supporting both security applications and business use cases such as mileage reimbursement and route optimization. These services demonstrate how OTA technology transforms vehicles from simple transportation devices into sophisticated connected platforms that integrate seamlessly with digital ecosystems and services.
+Even when the platform also provides remote diagnostics and fleet services, the update subsystem typically has the strictest integrity requirements because it can modify the software running safety-relevant ECUs. This is precisely why modern regulatory frameworks treat software updates as a type-approval concern. UNECE UN Regulation No. 156 defines requirements around software updates and the operation of a Software Update Management System (SUMS) for vehicles under type approval regimes. ([UNECE][4])
+
+A practical way to describe the update service is as an end-to-end state machine that spans cloud and vehicle and has explicit commit/rollback semantics.
+
+```mermaid
+stateDiagram-v2
+  [*] --> CampaignPlanned
+  CampaignPlanned --> Offered: vehicles matched + package authorized
+  Offered --> Downloaded: vehicle staged package
+  Downloaded --> Verified: signature + compatibility + anti-rollback ok
+  Verified --> Installing: preconditions satisfied
+  Installing --> Trial: reboot/activate in controlled mode
+  Trial --> Committed: health checks pass + commit
+  Trial --> RolledBack: health checks fail or timeout
+  RolledBack --> Offered: retry or alternative package
+  Committed --> [*]
+```
+
+The “anti-rollback” and “verification” concepts become non-negotiable once you consider real attackers. Integrity checks are not only about network attackers; they are also about supply chain compromise and credential theft. This is why update services often use layered signing and metadata validation approaches, and why operational controls over keys and release approvals are part of the technical architecture.
+
+## Additional connected services: commands, identity, commerce, and trust boundaries
+
+Beyond maintenance and updates, OTA platforms commonly host connected services that feel consumer-oriented but are still deeply technical in their requirements. Remote access services (lock/unlock, remote start, pre-conditioning) are essentially authenticated remote command delivery with strict safety and abuse-prevention constraints. Digital wallet and toll/charging payments are identity and transaction systems embedded into a vehicle UX, which raises questions about tokenization, secure elements, and revocation workflows. Voice assistants and in-car commerce are hybrid edge/cloud systems that depend on continuous model and capability updates, which often arrive via SOTA mechanisms.
+
+The recurring technical theme is trust boundaries. A remote command plane should not share credentials or privilege domains with the software update plane. Payments should be isolated from vehicle actuation. Voice services should not become a covert channel into safety ECUs. The platform architecture typically enforces this through strong identity and access management, segmented services, hardware-backed key storage in the vehicle, and explicit policy checks before commands are executed.
+
+The extended vehicle concept is relevant here because many connected services are essentially “vehicle data and vehicle functions exposed as controlled services.” UNECE material describing extended vehicle framing emphasizes off-board systems and standardized interfaces as part of connected vehicle application areas. ([UNECE][5])
+
+```mermaid
+graph TD
+  IAM["Identity & Access Management"] --> Cmd["Remote Command Service"]
+  IAM --> Pay["Payments / Wallet Service"]
+  IAM --> Dx["Diagnostics Service"]
+  IAM --> Upd["Software Update Service"]
+
+  Cmd --> GW["Vehicle Gateway/TCU"]
+  Dx --> CloudData["Data Platform"]
+  Upd --> GW
+  Pay --> CloudPay["Payment Processor/Token Vault"]
+
+  GW --> Policy["Vehicle-side policy checks"]
+  Policy --> ECUs["ECUs / Actuators / HMI"]
+```
+
+## Regulatory and process alignment: why “service architecture” includes audits
+
+Once OTA services affect software baselines, security posture, or type-approval relevant behavior, they inevitably intersect with regulatory expectations. UNECE R156 focuses on the software update management system, while UNECE R155 focuses on cybersecurity management system expectations. The practical engineering implication is that your OTA platform must produce auditable evidence of what it did, why it did it, and how it prevented unsafe or unauthorized actions. ISO 24089 complements this by framing software update engineering requirements and recommendations across organizational and project execution. ([ISO][2])
+
+## References
+
+*   **[ISO 20078-1:2021][1]**: Road vehicles — Extended vehicle (ExVe) web services.
+*   **[ISO 24089:2023][2]**: Road vehicles — Software update engineering.
+*   **[Uptane][3]**: A secure software update framework for automobiles.
+*   **[UN Regulation No. 156][4]**: Software update and software update management system.
+*   **[The Extended Vehicle Concept][5]**: UNECE presentation on ExVe framing and standards.
+*   **[UN Regulation No. 155][6]**: Uniform provisions concerning the approval of vehicles with regard to cyber security and cyber security management system.
+
+[1]: https://www.iso.org/standard/80183.html
+[2]: https://www.iso.org/standard/77796.html
+[3]: https://uptane.org/
+[4]: https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update
+[5]: https://unece.org/sites/default/files/2021-02/GRVA-09-12e.pdf
+[6]: https://eur-lex.europa.eu/legal-content/DE/TXT/PDF/?uri=OJ%3AL_202500005
