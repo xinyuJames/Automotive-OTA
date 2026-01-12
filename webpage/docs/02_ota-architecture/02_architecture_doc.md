@@ -1,87 +1,131 @@
-# OTA Architecture Documentation
+# OTA Architecture
 
-## Introduction and Overview
+## Introduction and architectural intent
 
-The OTA (Over-The-Air) architecture represents a foundational template for automotive software update implementations. This architecture establishes a comprehensive framework for delivering software updates from the OEM backend to vehicle electronic control units (ECUs) through secure communication channels. While specific OEM implementations may vary in design details, the core architectural components and their interactions remain consistent across most automotive OTA solutions. The architecture encompasses three primary domains: the OEM backend infrastructure, the vehicle gateway system, and the target ECUs requiring updates.
+An automotive Over-The-Air (OTA) architecture is not simply a data delivery pipeline; it is a distributed control system whose purpose is to safely evolve software inside vehicles that operate in the physical world. The architecture must balance three competing forces at all times: central control by the OEM, autonomous safety decisions made locally by the vehicle, and scalability across fleets that may contain millions of heterogeneous configurations. The result is a layered architecture in which responsibilities are deliberately separated between backend systems, vehicle gateways, and target ECUs, while communication paths and trust boundaries are tightly controlled.
 
-## OEM Backend Architecture
+Although OEM implementations differ in tooling, vendors, and internal interfaces, the conceptual structure is remarkably stable across the industry. This documentation describes that stable structure and explains why each component exists, how data flows through the system, and how execution control is maintained from campaign definition down to ECU flashing.
 
-The OEM backend serves as the central control hub for all OTA-related activities within the automotive ecosystem. This backend infrastructure is strategically divided into three primary functional blocks, each handling distinct aspects of the update lifecycle. The update management block maintains responsibility for software version control, update package creation and validation, and release management processes. This component ensures that all software packages meet quality standards and compatibility requirements before distribution to the vehicle fleet.
+## OEM backend architecture as the source of truth
 
-The device management block maintains comprehensive vehicle identity records, ECU inventories, variant configurations, regional specifications, and compatibility mappings. This functional area ensures that updates are delivered only to compatible vehicles and ECUs, preventing mismatched software installations that could compromise vehicle functionality or safety. The device management system continuously updates its database with vehicle configuration changes, ECU replacements, and fleet composition modifications.
+The OEM backend is the authoritative domain in the OTA ecosystem. It defines what software exists, which vehicles are eligible to receive it, and under which conditions updates may be executed. Architecturally, it is useful to view the backend as three cooperating but distinct subsystems, because each solves a different class of risk.
 
-Campaign management constitutes the third critical backend component, orchestrating the strategic rollout of software updates across the vehicle fleet. This system enables OEMs to select target vehicles based on various criteria, schedule update deployments during optimal time windows, and monitor progress throughout the update lifecycle. Campaign management provides granular control over update distribution, allowing for phased rollouts, targeted updates for specific vehicle populations, and rapid response to critical software issues.
+The update management subsystem is responsible for software artifacts themselves. It handles versioning, build provenance, validation results, signing, and release readiness. This is where software packages transition from “development output” into “deployable artifacts.” In a mature setup, an update package is never just a binary; it is a binary plus metadata describing compatibility constraints, dependencies, rollback rules, and safety relevance. This metadata is often cryptographically signed together with the artifact so that downstream systems cannot silently alter eligibility rules.
 
-```kroki-mermaid {display-width=600px display-align=center}
+The device management subsystem represents the fleet model. It maintains identities for vehicles, gateways, and ECUs, along with their hardware revisions, regional homologation context, and installed software inventories. This subsystem answers the most dangerous question in OTA: “Is this update allowed on this specific vehicle?” Mistakes here lead to misflashing, which is why device management is usually treated as configuration-critical infrastructure rather than a simple database.
+
+Campaign management builds on both of the above. It translates “this update exists” into “this update should be deployed to these vehicles, in this order, under these policies.” Campaigns encode rollout strategy, timing constraints, retry logic, and stop conditions. They are also the point where operational feedback loops attach, allowing campaigns to be slowed, paused, or aborted if real-world telemetry shows unexpected behavior.
+
+```mermaid
 graph TD
-    OEM_Backend["OEM Backend"] --> Update_Mgmt["Update Management"]
-    OEM_Backend --> Device_Mgmt["Device Management"]
-    OEM_Backend --> Campaign_Mgmt["Campaign Management"]
-    
-    Update_Mgmt -- "Software Packages" --> Cloud_Storage["Cloud Storage"]
-    Campaign_Mgmt -- "Update Instructions" --> TCU["Telematics Control Unit"]
-    Device_Mgmt -- "Vehicle/ECU Data" --> Campaign_Mgmt
-    
-    subgraph "Backend Functions"
-        Update_Mgmt
-        Device_Mgmt
-        Campaign_Mgmt
-    end
+  OEM["OEM Backend"] --> UM["Update Management<br>(packages, versions, signing)"]
+  OEM --> DM["Device Management<br>(vehicle + ECU inventory)"]
+  OEM --> CM["Campaign Management<br>(targeting, rollout policy)"]
+
+  UM --> Repo["Artifact Repository / Object Storage"]
+  DM --> CM
+  CM --> Control["Campaign Control APIs"]
 ```
 
-## Vehicle-Side Components
+From a governance perspective, this backend domain is what regulators and auditors look at when evaluating a Software Update Management System under UNECE R156, because it embodies the processes that decide what may happen in the fleet.
+[https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update](https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update)
 
-The Telematics Control Unit (TCU) serves as the primary gateway ECU responsible for managing OTA operations within the vehicle architecture. While modern vehicles may incorporate multiple gateway ECUs, this architecture treats the TCU as the central coordinator for all OTA-related activities. The TCU facilitates communication between the OEM backend and internal vehicle systems, routing update instructions and data payloads to appropriate target ECUs based on their communication protocols and network topologies.
+## Vehicle-side architecture and the role of the gateway
 
-The OTA manager functions as a software component within the vehicle, coordinating all OTA-related activities on the vehicle side. This logical component may be implemented as a single entity or distributed across multiple subcomponents depending on system complexity and design requirements. The OTA manager receives update instructions from the OEM backend, validates update packages, manages update execution sequences, and handles error conditions during the update process. This component serves as the central orchestrator for vehicle-side update operations, ensuring proper sequencing and validation of update steps.
+Inside the vehicle, OTA functionality is intentionally centralized. The Telematics Control Unit (TCU), or a functionally equivalent gateway ECU, acts as the single point of contact between the cloud and the internal vehicle networks. This design choice limits attack surface, simplifies trust management, and provides a single coordinator for update execution.
 
-## Communication Protocols and Data Flow
+The TCU is responsible for maintaining a secure communication session with the backend, downloading update artifacts, validating their authenticity, and orchestrating installation across multiple target ECUs. It does not simply forward files; it enforces local policy. If the backend proposes an update but the vehicle is in an unsafe state, the TCU must defer or reject execution regardless of backend intent.
 
-The communication infrastructure between the OEM backend and vehicle employs two primary protocols, each optimized for specific types of data transfer. MQTT serves as the preferred protocol for control signaling, status updates, acknowledgments, and lightweight messaging between the backend and the OTA manager. This publish-subscribe protocol enables efficient real-time communication with minimal bandwidth requirements, making it ideal for maintaining continuous connectivity and status synchronization between backend systems and vehicle fleets.
+Within the vehicle, the OTA manager is a logical component that may be implemented as a service inside the TCU or distributed across cooperating services. Its responsibility is to manage the update lifecycle locally. It evaluates preconditions, sequences update steps, interacts with diagnostic services, and aggregates status from target ECUs. Conceptually, it is the vehicle’s “update brain.”
 
-HTTPS provides the secure transport mechanism for larger data payloads, particularly software packages and update files. This protocol ensures encrypted transmission of substantial data volumes from the OEM backend or cloud storage to the TCU. The dual-protocol approach optimizes communication efficiency by using lightweight messaging for control operations while leveraging secure, reliable transport for bulk data transfers. This separation of concerns enables the OTA system to maintain responsive control signaling while ensuring secure delivery of software packages.
+```mermaid
+graph LR
+  Cloud["Cloud / Backend"] --> TCU["Gateway / TCU"]
+  TCU --> OTA["OTA Manager"]
+  OTA --> ECU1["Target ECU A"]
+  OTA --> ECU2["Target ECU B"]
+  OTA --> ECU3["Target ECU C"]
 
-```kroki-mermaid {display-width=600px display-align=center}
+  ECU1 --> OTA
+  ECU2 --> OTA
+  ECU3 --> OTA
+  OTA --> TCU
+```
+
+This pattern aligns closely with platform concepts defined in AUTOSAR Adaptive, where update and configuration management are treated as standardized platform services rather than ad-hoc ECU logic.
+[https://www.autosar.org/standards/adaptive-platform/](https://www.autosar.org/standards/adaptive-platform/)
+
+## Communication protocols and separation of concerns
+
+OTA systems almost universally separate control communication from bulk data transfer. This separation is not accidental; it reduces coupling and improves robustness.
+
+Control-plane communication is typically implemented using MQTT or a similar lightweight publish–subscribe protocol. MQTT is well suited for fleet-scale status reporting, command dispatch, acknowledgments, and asynchronous notifications. It allows vehicles to remain connected with minimal bandwidth while enabling backend systems to react quickly to state changes.
+
+Data-plane communication is usually handled over HTTPS. Software packages can be large, and HTTPS provides mature tooling for secure, reliable, resumable transfers. Using HTTPS also integrates naturally with object storage, content delivery networks, and existing cloud security infrastructure.
+
+```mermaid
 sequenceDiagram
-    participant OEM_Backend
-    participant TCU
-    participant OTA_Manager
-    participant ECU
-    
-    OEM_Backend->>TCU: Update Instructions (MQTT)
-    TCU->>OTA_Manager: Process Update Request
-    OTA_Manager->>TCU: Acknowledgment (MQTT)
-    
-    TCU->>OEM_Backend: Request Software Package (HTTPS)
-    OEM_Backend->>TCU: Transfer Software Package (HTTPS)
-    
-    OTA_Manager->>ECU: Update Request (UDS)
-    ECU->>OTA_Manager: Update Response (UDS)
-    
-    OTA_Manager->>TCU: Update Status (MQTT)
-    TCU->>OEM_Backend: Status Report (MQTT)
+  participant Backend
+  participant TCU
+  participant OTA
+  participant ECU
+
+  Backend->>TCU: Update command / metadata (MQTT)
+  TCU->>OTA: Forward update request
+  OTA->>TCU: Ack + readiness state
+
+  TCU->>Backend: Request artifact (HTTPS)
+  Backend->>TCU: Artifact download (HTTPS)
+
+  OTA->>ECU: Diagnostic session + programming request (UDS)
+  ECU->>OTA: Programming response
+
+  OTA->>TCU: Progress + result
+  TCU->>Backend: Status report (MQTT)
 ```
 
-## User Interaction and Consent Management
+This dual-channel model also supports security hardening. Even if the transport layer is compromised, update integrity still depends on cryptographic verification of signed metadata and binaries, an approach formalized by frameworks such as Uptane.
+[https://uptane.org/](https://uptane.org/)
 
-The OTA update process incorporates user consent mechanisms to ensure updates occur at appropriate times and under suitable conditions. The OTA manager interacts with the Human-Machine Interface (HMI) to request user consent when required by system design or regulatory requirements. Users receive notifications about available updates and can decide on the appropriate timing for update execution based on their convenience and current vehicle state. This user-centric approach respects vehicle usage patterns while ensuring timely software maintenance.
+## User interaction and consent as part of execution control
 
-User authentication and authorization processes may occur through either the vehicle HMI or OEM-provided mobile applications, depending on manufacturer implementation choices. The architecture supports both vehicle-side and backend-initiated update triggers. HMI-based notifications are generated directly by the OTA manager within the vehicle, providing immediate feedback about update availability and status. Mobile application triggers are initiated through the OEM backend, allowing users to remotely monitor and manage update operations through connected mobile devices.
+OTA architecture does not end at ECUs; it includes the driver. User interaction is an execution control mechanism, especially for updates that affect vehicle availability. The OTA manager interfaces with the Human–Machine Interface (HMI) to inform the driver of update availability, required conditions, expected duration, and consequences of interruption.
 
-## ECU Update Mechanisms
+Some updates may execute automatically in the background, while others require explicit user acknowledgment. The architecture supports both vehicle-initiated and backend-initiated flows. A backend-triggered update might result in a push notification to a mobile application, while a vehicle-initiated update might surface directly on the infotainment display.
 
-The TCU employs UDS (Unified Diagnostic Services) tester functionality to communicate with other ECUs during the update process. Acting as a diagnostic master, the TCU sends update requests and receives responses from target ECUs using standardized diagnostic protocols. This approach ensures compatibility with existing automotive diagnostic infrastructure while providing reliable communication for update operations.
+This flexibility allows OEMs to balance convenience with safety and regulatory requirements. It also ensures that user decisions are reflected in backend telemetry, enabling accurate reporting of deferred updates and user-driven delays.
 
-Different ECUs may utilize various communication protocols depending on their design and network connectivity. Some ECUs communicate over CAN (Controller Area Network) buses, while others leverage Ethernet-based communication for higher bandwidth requirements. The TCU, functioning as a gateway, intelligently routes update data using the appropriate transport mechanism for each target ECU. This protocol-agnostic approach enables the OTA system to update diverse ECU populations within a single vehicle architecture.
+## ECU update mechanisms and diagnostic control
 
-## Special Cases and TCU Self-Update
+Once an update reaches the vehicle, execution relies on established diagnostic mechanisms. The TCU typically acts as a UDS tester, initiating diagnostic sessions with target ECUs and invoking standardized services for download, transfer, and programming. This reuse of diagnostic protocols ensures compatibility with existing ECU bootloaders and minimizes the need for custom flashing logic.
 
-A special scenario arises when the TCU itself requires a software update. In this situation, the TCU incorporates its own dedicated update mechanism, typically implemented as a UDS server or specialized update handler. This self-update capability allows the TCU to update its own firmware independently of other ECUs, ensuring continuous operation and security of the gateway functionality. The TCU update process must maintain system integrity throughout the update sequence, preserving communication capabilities and basic vehicle functions.
+Different ECUs may reside on different networks. Legacy controllers often communicate over CAN or FlexRay, while newer domain controllers and high-performance ECUs may use Automotive Ethernet. The gateway abstracts these differences, routing update data over the appropriate transport while presenting a uniform update workflow to the OTA manager.
 
-TCU update strategies may employ single-bank or dual-bank memory architectures, each offering distinct advantages for update reliability and system availability. Single-bank architectures require careful update sequencing to maintain system functionality during the update process, while dual-bank architectures enable seamless updates by maintaining active and inactive memory partitions. The selection of update strategy depends on factors such as memory constraints, update frequency requirements, and system availability specifications.
+This abstraction is critical for scalability. It allows a single OTA architecture to span mixed-network vehicles without exposing backend systems to in-vehicle network complexity.
 
-## System Integration and Component Interactions
+## Special case: updating the gateway itself
 
-The OTA architecture demonstrates how OEM backend systems, vehicle-side components, communication protocols, and target ECUs collaborate to deliver reliable software updates. The OEM backend provides centralized control and management capabilities, while the TCU serves as the vehicle-side gateway coordinating update operations. The OTA manager orchestrates vehicle-side activities, ensuring proper sequencing and validation of update steps. Communication protocols enable efficient and secure data exchange between backend and vehicle systems.
+Updating the TCU introduces a bootstrapping problem: the component responsible for OTA must update itself without losing its ability to recover. To solve this, TCUs usually include a dedicated update mechanism, often implemented as a UDS server or a minimal bootloader that remains operational even when the main application is replaced.
 
-This architectural framework establishes the foundation for most automotive OTA solutions, providing a scalable and secure approach to vehicle software maintenance. The modular nature of the architecture allows for customization based on specific OEM requirements while maintaining core principles of security, reliability, and user control. As vehicle software complexity continues to increase, this architecture provides the necessary infrastructure for managing software updates throughout the vehicle lifecycle.
+Architecturally, this often leads to dual-bank or A/B memory designs, where one partition runs the active software while the other is updated. After verification, control is switched. Single-bank designs are possible but require stricter sequencing and higher risk tolerance.
+
+The need for gateway self-update capability is one reason OTA architectures emphasize recoverability and staged activation. A gateway that cannot recover from a failed update effectively bricks the vehicle’s connectivity layer.
+
+## System integration and lifecycle perspective
+
+When viewed end to end, the OTA architecture forms a closed-loop system. Backend systems define intent, vehicles enforce safety, and telemetry feeds back into operational control. Each component exists to manage a specific class of risk: configuration risk in the backend, distribution risk in the cloud, execution risk in the vehicle.
+
+This architecture scales because it is modular. OEMs can replace cloud providers, change diagnostic tooling, or evolve gateway hardware without breaking the conceptual model. What remains constant are the principles: centralized truth, local safety enforcement, secure communication, and observable execution.
+
+As vehicles become increasingly software-defined, this architecture is no longer optional. It is the infrastructure that enables long vehicle lifecycles, rapid security response, and continuous feature evolution while preserving trust and safety.
+
+## References
+
+| Standard / Framework | Description | Reference |
+| :--- | :--- | :--- |
+| **UNECE R156** | Software Update Management System (SUMS) regulation | [Official Document](https://unece.org/transport/documents/2021/03/standards/un-regulation-no-156-software-update-and-software-update) |
+| **ISO 24089:2023** | Road vehicles — Software update engineering | [ISO Standard](https://www.iso.org/standard/77796.html) |
+| **AUTOSAR Adaptive** | Standardized Update and Configuration Management (UCM) | [Specification](https://www.autosar.org/standards/adaptive-platform/) |
+| **Uptane** | Secure software update framework for automotive | [Project Site](https://uptane.org/) |
+| **MQTT** | Lightweight messaging for control-plane communication | [Official Site](https://mqtt.org/) |
+| **ISO 14229 (UDS)** | Unified Diagnostic Services for ECU programming | [ISO Standard](https://www.iso.org/standard/77436.html) |
