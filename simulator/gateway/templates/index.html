@@ -1,203 +1,122 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SdV OS 2.0</title>
-    <!-- Inter Font -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-
-    <!-- External CSS -->
+    <title>Automotive OTA</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <!-- Material Symbols -->
-    <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0" />
-    <style>
-        .material-symbols-rounded {
-            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-        }
-    </style>
+    <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
 </head>
-
 <body>
+    <nav aria-label="Pages">
+        <p><strong>Automotive OTA</strong></p>
+        <a href="#ota" data-page="ota" aria-current="page">OTA</a>
+        <a href="#registration" data-page="registration">Car registration</a>
+        <a href="#simulation" data-page="simulation">Vehicle simulation</a>
+    </nav>
+    <main>
+        <section id="ota-page" aria-labelledby="ota-heading">
+            <h1 id="ota-heading">OTA — Software updates</h1>
+            <div class="ota-columns">
+            <div>
+            <p>Vehicle: <code>{{ vehicle_id }}</code></p>
+            <p id="connection-status" role="status">Connecting to gateway…</p>
+            <p>Agent status: <strong id="ota-state">Loading…</strong></p>
+            <p>Campaign: <span id="campaign-id">—</span></p>
 
-    <!-- Top Status Bar -->
-    <div class="status-bar">
-        <div class="status-left">
-            <span class="time" id="clock">12:00</span>
-            <span>|</span>
-            <span class="element"><span class="material-symbols-rounded"
-                    style="font-size: 1.1rem; vertical-align: middle;">thermostat</span> 72°F</span>
-        </div>
-        <div class="status-right">
-            <span class="material-symbols-rounded" style="font-size: 1.2rem;">signal_cellular_alt</span>
-            <span>Profile: Kyle</span>
-        </div>
-    </div>
+            {% for ecu_id, ecu_name in ecu_names.items() %}
+            <section class="ecu" aria-labelledby="{{ ecu_id }}-heading">
+                <h2 id="{{ ecu_id }}-heading">{{ ecu_name }}</h2>
+                <table>
+                    <caption class="visually-hidden">{{ ecu_name }} software versions</caption>
+                    <tbody>
+                        <tr><th scope="row">Current version</th><td id="{{ ecu_id }}-current">—</td></tr>
+                        <tr><th scope="row">Old version for rollback</th><td id="{{ ecu_id }}-previous">—</td></tr>
+                        <tr><th scope="row">New version</th><td id="{{ ecu_id }}-new">—</td></tr>
+                    </tbody>
+                </table>
+            </section>
+            {% endfor %}
 
-    <!-- Main Workspace -->
-    <div class="main-stage">
-        <!-- Sidebar -->
-        <div class="dock">
-            <!-- Icons -->
-            <div class="app-icon active"><span class="material-symbols-rounded">map</span></div>
-            <div class="app-icon"><span class="material-symbols-rounded">music_note</span></div>
-            <div class="app-icon" onclick="openSimControls()"><span class="material-symbols-rounded">tune</span></div>
-            <div class="app-icon" onclick="openSimControls()"><span
-                    class="material-symbols-rounded">directions_car</span></div>
-        </div>
-
-        <!-- Navigation (Mock) -->
-        <div class="nav-view"></div>
-
-        <!-- Widget Area -->
-        <div class="widget-col">
-            <div class="widget music-widget">
-                <div class="album-art"></div>
-                <div style="font-weight: 600;">Midnight City</div>
-                <div style="color: var(--text-secondary); font-size: 0.9rem;">M83</div>
+            <p class="note">— = version not reported.</p>
             </div>
-            <div class="widget">
-                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 10px;">TIRE PRESSURE</div>
-                <div style="display: flex; justify-content: space-between;">
-                    <span>FL 34</span> <span>FR 34</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                    <span>RL 35</span> <span>RR 35</span>
-                </div>
+            <aside class="update-details" aria-labelledby="details-heading">
+                <h2 id="details-heading">New version details</h2>
+                <p id="details-empty" class="note">No update details available yet.</p>
+                {% for ecu_id, ecu_name in ecu_names.items() %}
+                <section id="{{ ecu_id }}-details" hidden>
+                    <h3>{{ ecu_name }}</h3>
+                    <p><strong>Version:</strong> <span id="{{ ecu_id }}-version-change">—</span></p>
+                    <p><strong>Component:</strong> <span id="{{ ecu_id }}-component">—</span></p>
+                    <p><strong>Download:</strong> <span id="{{ ecu_id }}-download">—</span></p>
+                    <p id="{{ ecu_id }}-release-notes" class="release-notes"></p>
+                </section>
+                {% endfor %}
+            </aside>
             </div>
-        </div>
-    </div>
-
-    <!-- TOAST NOTIFICATION -->
-    <div id="update_toast" class="toast" onclick="openOTA()">
-        <div class="toast-icon"><span class="material-symbols-rounded"
-                style="font-size: 1.2rem; color: white;">download</span></div>
-        <div>
-            <div style="font-weight: 600;">Software Update Available</div>
-            <div style="font-size: 0.8rem; opacity: 0.8;">Tap to install v2.0.1</div>
-        </div>
-    </div>
-
-    <!-- VEHICLE CONTROLS OVERLAY -->
-    <div id="sim_app" class="ota-overlay">
-        <div class="ota-card">
-            <div class="ota-header">
-                <span class="material-symbols-rounded"
-                    style="font-size: 3rem; margin-bottom: 20px; color: #10b981;">tune</span>
+            <div class="actions">
+                <button id="upgrade" type="button" disabled>Upgrade to newest</button>
+                <button id="rollback" type="button">Rollback</button>
+                <button id="force-stop" type="button">Force stop</button>
             </div>
-            <div class="ota-title">Vehicle State Simulator</div>
-            <div class="ota-subtitle">Adjust simulated signals to test safety checks.</div>
-
-            <div class="sim-controls">
-                <div class="control-row">
-                    <span class="control-label">Battery SoC</span>
-                    <input type="range" id="sim_soc" min="0" max="100" value="50"
-                        oninput="updateSimVal('soc', this.value)">
-                    <span class="control-val" id="val_soc">50%</span>
-                </div>
-                <div class="control-row">
-                    <span class="control-label">Gear</span>
-                    <select id="sim_gear" onchange="pushSimState()">
-                        <option value="P">Park (P)</option>
-                        <option value="R">Reverse (R)</option>
-                        <option value="N">Neutral (N)</option>
-                        <option value="D">Drive (D)</option>
-                    </select>
-                </div>
-                <div class="control-row">
-                    <span class="control-label">Parking Brake</span>
-                    <button id="sim_brake" class="toggle-btn active" onclick="toggleSim('brake')">Engaged</button>
-                </div>
-                <div class="control-row">
-                    <span class="control-label">Ignition</span>
-                    <select id="sim_ign" onchange="pushSimState()">
-                        <option value="OFF">OFF</option>
-                        <option value="ACC">ACC</option>
-                        <option value="ON" selected>ON</option>
-                        <option value="RUN">RUN</option>
-                    </select>
-                </div>
+            <p id="action-message" role="alert" hidden></p>
+            <p id="failure-reason" role="alert" hidden></p>
+            <div class="progress-row">
+                <label for="campaign-progress">Campaign progress</label>
+                <progress id="campaign-progress" max="100" value="0">0%</progress>
+                <span id="progress-value">0%</span>
             </div>
+            <p id="progress-status" class="note">Waiting for gateway.</p>
 
-            <button class="ota-btn" onclick="closeSimControls()">Close</button>
-        </div>
-    </div>
 
-    <!-- OTA APP OVERLAY -->
-    <div id="ota_app" class="ota-overlay">
-        <div class="ota-card">
-            <div class="ota-header">
-                <span class="material-symbols-rounded"
-                    style="font-size: 4rem; margin-bottom: 20px; color: #3b82f6;">directions_car</span>
-            </div>
-
-            <div id="view_approval">
-                <div class="ota-title">Software Update v2.0.1</div>
-                <div class="ota-subtitle">Performance improvements & critical security fixes.</div>
-
-                <div class="release-notes">
-                    • <strong>Engine ECU:</strong> Optimized fuel injection mapping.<br>
-                    • <strong>ADAS ECU:</strong> Improved lane keeping latency.<br>
-                    • Verifies Ed25519 signatures before installation.<br>
-                    • Requires 5-10 minutes. Vehicle will be immobile.
-                </div>
-
-                <div style="margin-bottom: 2rem;">
-                    <label style="color: #f87171; cursor: pointer; font-size: 0.9rem;">
-                        <input type="checkbox" id="fail_check"> Simulate Installation Failure (Rollback Test)
-                    </label>
-                </div>
-
-                <div style="display: flex; justify-content: center; gap: 16px;">
-                    <button class="ota-btn" style="background: #374151; color: white;"
-                        onclick="closeOTA()">Later</button>
-                    <button class="ota-btn" onclick="approve()">Install Now</button>
-                </div>
-            </div>
-
-            <div id="view_progress" class="hidden">
-                <div class="ota-title">Updating...</div>
-                <div class="ota-subtitle">Do not turn off your vehicle.</div>
-
-                <div class="progress-container">
-                    <div class="p-bar-labels"><span>Engine Control Unit</span><span id="label_engine">Pending</span>
-                    </div>
-                    <div class="p-track">
-                        <div id="bar_engine" class="p-fill"></div>
-                    </div>
-
-                    <div class="p-bar-labels"><span>ADAS Computer</span><span id="label_adas">Pending</span></div>
-                    <div class="p-track">
-                        <div id="bar_adas" class="p-fill"></div>
-                    </div>
-                </div>
-
-                <div id="term_log" class="term-log">> Authenticating with Control Plane...</div>
-            </div>
-
-            <div id="view_success" class="hidden">
-                <div class="ota-title" style="color: var(--success);">Update Successful</div>
-                <div class="ota-subtitle">Your vehicle is now running v2.0.1.</div>
-                <div style="margin: 30px 0;"><span class="material-symbols-rounded"
-                        style="font-size: 6rem; color: var(--success);">check_circle</span></div>
-                <button class="ota-btn" onclick="rebootSystem()">Finish</button>
-            </div>
-
-            <div id="view_failed" class="hidden">
-                <div class="ota-title" style="color: var(--error);">Update Failed</div>
-                <div class="ota-subtitle">System safely rolled back to previous version.</div>
-                <div style="margin: 20px 0; color: #9ca3af;" id="fail_reason">Error during installation.</div>
-                <button class="ota-btn" onclick="rebootSystem()">Close</button>
-            </div>
-
-        </div>
-    </div>
-
-    <!-- External JS -->
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+        </section>
+        <section id="registration-page" aria-labelledby="registration-heading" hidden>
+            <h1 id="registration-heading">Car registration</h1>
+            <p>Vehicle: <code>{{ vehicle_id }}</code></p>
+            <form id="registration-form">
+                <p><label>Make <input id="registration-make"></label></p>
+                <p><label>Model <input id="registration-model"></label></p>
+                <p><label>Model year <input id="registration-year"></label></p>
+                <p><label>Vehicle type <input id="registration-type"></label></p>
+                <p><label>Features (comma separated) <input id="registration-features"></label></p>
+                <button type="submit">Save registration</button>
+            </form>
+            <p id="registration-message" role="status"></p>
+            <h2>Record an event</h2>
+            <form id="event-form">
+                <label>Type <select id="event-kind"><option value="crash">Crash</option><option value="diagnostic">Diagnostic</option></select></label>
+                <label>Description <input id="event-description" required></label>
+                <button type="submit">Record event</button>
+            </form>
+            <p id="event-message" role="status"></p>
+            <h2>Reported versions and recent history</h2>
+            <button id="refresh-registration" type="button">Refresh records</button>
+            <pre id="registration-records"></pre>
+        </section>
+        <section id="simulation-page" aria-labelledby="simulation-heading" hidden>
+            <h1 id="simulation-heading">Vehicle simulation</h1>
+                <form id="vehicle-form">
+                    <fieldset id="vehicle-fields" disabled>
+                        <legend>Conditions checked before approval</legend>
+                        <label>Battery (%) <input id="battery" name="battery_soc" type="number" min="0" max="100" required></label>
+                        <label>Gear
+                            <select id="gear" name="gear">
+                                <option>P</option><option>R</option><option>N</option><option>D</option>
+                            </select>
+                        </label>
+                        <label>Ignition
+                            <select id="ignition" name="ignition">
+                                <option>OFF</option><option>ACC</option><option>ON</option><option>RUN</option>
+                            </select>
+                        </label>
+                        <label><input id="parking-brake" type="checkbox"> Parking brake engaged</label>
+                        <button type="submit">Save vehicle state</button>
+                    </fieldset>
+                </form>
+                <p id="vehicle-message" role="status"></p>
+                <label><input id="simulate-failure" type="checkbox"> Simulate installation failure on the next upgrade</label>
+        </section>
+        <noscript><p>Enable JavaScript to view update status and use the controls.</p></noscript>
+    </main>
 </body>
-
 </html>

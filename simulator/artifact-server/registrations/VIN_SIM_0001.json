@@ -1,0 +1,11 @@
+{
+  "vehicle_id": "VIN_SIM_0001",
+  "make": "",
+  "model": "",
+  "model_year": "",
+  "vehicle_type": "simulated vehicle",
+  "features": [
+    "engine control",
+    "ADAS"
+  ]
+}

@@ -15,7 +15,7 @@ class OTAEventListener:
 
     def start(self):
         try:
-            self.client.connect(self.broker, 1883, 60)
+            self.client.connect_async(self.broker, 1883, 60)
             self.client.loop_start()
             logging.info("MQTT Client connected and listening.")
         except Exception as e:

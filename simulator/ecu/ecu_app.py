@@ -1,126 +1,100 @@
-import os, time, base64, hashlib, sys
+import base64
+import hashlib
+import os
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from can_bus import CanRPC
+from firmware_store import FirmwareStore
 from trace_logger import TraceLogger
 
-# Configuration
-ECU_ID = os.getenv("ECU_ID", "unknown_ecu")
-TRACER = TraceLogger(f"ecu-{ECU_ID}")
-PUB_KEY_B64 = os.getenv("OTA_PUBLIC_KEY")
+MAX_FIRMWARE = 16 * 1024 * 1024
+CAN_IDS = {'engine': 0x100, 'adas': 0x200}
 
-# CAN IDs
-# Engine: Listen 0x100, Reply 0x101
-# ADAS:   Listen 0x200, Reply 0x201
-CAN_IDS = {
-    "engine": 0x100,
-    "adas":   0x200
-}
-LISTEN_ID = CAN_IDS.get(ECU_ID, 0x000)
-REPLY_ID  = LISTEN_ID + 1
 
-if LISTEN_ID == 0:
-    print(f"Unknown ECU ID: {ECU_ID}")
-    sys.exit(1)
+class ECU:
+    def __init__(self, store, public_key):
+        self.store = store
+        self.tracer = TraceLogger('ecu_' + store.ecu_id)
+        self.key = public_key
+        self.mode = 'IDLE'
+        self.buffer = bytearray()
+        self.meta = {}
 
-print(f"ECU {ECU_ID} starting on CAN Bus (Listen: {hex(LISTEN_ID)})...")
-
-# State Machine
-state = {
-    "mode": "IDLE", # IDLE, PROGRAMMING, VERIFIED, ACTIVATED, CONFIRMED
-    "buffer": bytearray(),
-    "expected_size": 0,
-    "expected_sha256": None,
-    "expected_signature": None
-}
-
-slots = {"current": "A", "target": "B"}
-versions = {"A": "1.0.0", "B": None}
-pub_key = ed25519.Ed25519PublicKey.from_public_bytes(base64.b64decode(PUB_KEY_B64))
-
-can_rpc = CanRPC(LISTEN_ID)
-
-def fail(reason):
-    print(f"ERROR: {reason}")
-    return {"ok": False, "error": reason}
-
-def success():
-    return {"ok": True}
-
-def handle_rpc(method, params):
-    global state
-    print(f"RPC: {method}")
-    
-    if method == "enter_programming":
+    def handle_rpc(self, method, params):
         params = params or {}
-        state["mode"] = "PROGRAMMING"
-        TRACER.log("FLASH_STARTED", {"expected_size": params.get("expected_size")})
-        state["buffer"] = bytearray()
-        state["expected_size"] = params.get("expected_size")
-        state["expected_sha256"] = params.get("expected_sha256")
-        state["expected_signature"] = params.get("expected_signature")
-        return success()
-        
-    elif method == "write_block":
-        if state["mode"] != "PROGRAMMING":
-            return fail("bad state")
-        
-        offset = params.get("offset")
-        block = base64.b64decode(params.get("block_b64"))
-        
-        # Simple buffer management (extend or overwrite)
-        # In this sim, we just append assuming order, or use offset
-        if len(state["buffer"]) < offset:
-            state["buffer"].extend(b'\x00' * (offset - len(state["buffer"])))
-        state["buffer"][offset:offset+len(block)] = block
-        return success()
-        
-    elif method == "verify":
-        if state["mode"] != "PROGRAMMING":
-            return fail("bad state")
-            
-        # 1. Check SHA256 of firmware
-        h = hashlib.sha256(state["buffer"]).hexdigest()
-        if h != state["expected_sha256"]:
-            state["mode"] = "IDLE"
-            return fail("sha mismatch")
-            
-        # 2. Check Ed25519 Signature
         try:
-            sig = base64.b64decode(state["expected_signature"])
-            pub_key.verify(sig, state["expected_sha256"].encode())
-        except Exception as e:
-            state["mode"] = "IDLE"
-            return fail(f"signature invalid: {e}")
-            
-        state["mode"] = "VERIFIED"
-        return success()
-        
-    elif method == "activate":
-        simulate_failure = params.get("simulate_failure", False)
-        if state["mode"] != "VERIFIED":
-            return fail("bad state")
-            
-        if simulate_failure:
-            state["mode"] = "IDLE"
-            return fail("Boot loop detected. Rolled back.")
-            
-        # Swap slots
-        slots["current"], slots["target"] = slots["target"], slots["current"]
-        state["mode"] = "ACTIVATED"
-        TRACER.log("FLASH_COMPLETED", {"status": "success"})
-        return success()
-        
-    elif method == "confirm":
-        if state["mode"] != "ACTIVATED":
-            return fail("bad state")
-        state["mode"] = "CONFIRMED"
-        return success()
-        
-    return fail("method not found")
+            if params.get('vehicle_id') != self.store.vehicle_id:
+                raise ValueError('Wrong vehicle')
+            if method == 'inventory':
+                return {'ok': True, **self.store.inventory()}
+            if method == 'enter_programming':
+                size = params['expected_size']
+                if not isinstance(size, int) or not 0 < size <= MAX_FIRMWARE:
+                    raise ValueError('Invalid firmware size')
+                if not params.get('version') or params.get('update_type') not in ('SOTA', 'FOTA'):
+                    raise ValueError('Missing version/update type')
+                self.meta, self.buffer, self.mode = params, bytearray(), 'PROGRAMMING'
+            elif method == 'write_block':
+                if self.mode != 'PROGRAMMING':
+                    raise ValueError('Not programming')
+                block = base64.b64decode(params['block_b64'], validate=True)
+                if params['offset'] != len(self.buffer) or len(self.buffer) + len(block) > self.meta['expected_size']:
+                    raise ValueError('Invalid block offset or size')
+                self.buffer.extend(block)
+            elif method == 'verify':
+                if self.mode != 'PROGRAMMING' or len(self.buffer) != self.meta['expected_size']:
+                    raise ValueError('Incomplete transfer')
+                digest = hashlib.sha256(self.buffer).hexdigest()
+                if digest != self.meta['expected_sha256']:
+                    raise ValueError('Firmware hash mismatch')
+                self.key.verify(base64.b64decode(self.meta['expected_signature']), digest.encode())
+                self.store.stage(self.buffer, {'version': self.meta['version'], 'sha256': digest,
+                    'size': len(self.buffer), 'update_type': self.meta['update_type'],
+                    'campaign_id': self.meta.get('campaign_id')})
+                self.mode = 'VERIFIED'
+                self.trace('FIRMWARE_VERIFIED')
+            elif method == 'activate':
+                if self.mode != 'VERIFIED':
+                    raise ValueError('Not verified')
+                if params.get('simulate_failure'):
+                    self.mode = 'IDLE'
+                    raise ValueError('Simulated activation failure; current firmware unchanged')
+                result = self.store.activate()
+                self.mode = 'ACTIVATED'
+                self.trace('FIRMWARE_ACTIVATED')
+                return {'ok': True, **result}
+            elif method == 'confirm':
+                if self.mode != 'ACTIVATED':
+                    raise ValueError('Not activated')
+                result = self.store.inventory()
+                self.mode = 'CONFIRMED'
+                self.trace('FIRMWARE_CONFIRMED')
+                return {'ok': True, **result}
+            else:
+                raise ValueError('Unknown method')
+            return {'ok': True}
+        except Exception as error:
+            self.trace('RPC_FAILED', method=method, error=str(error) or type(error).__name__)
+            return {'ok': False, 'error': str(error) or type(error).__name__}
 
-# Main Loop
-while True:
-    req = can_rpc.receive(LISTEN_ID)
-    if req:
-        resp = handle_rpc(req.get("m"), req.get("p"))
-        can_rpc.send(REPLY_ID, "response", resp)
+    def trace(self, event, **details):
+        self.tracer.log(event, {'vehicle_id': self.store.vehicle_id, 'ecu_id': self.store.ecu_id,
+            'campaign_id': self.meta.get('campaign_id'), 'version': self.meta.get('version'), **details})
+
+
+def main():
+    ecu_id = os.environ['ECU_ID']
+    store = FirmwareStore(os.environ['ECU_STORAGE_DIR'], os.environ['VEHICLE_ID'], ecu_id)
+    key = ed25519.Ed25519PublicKey.from_public_bytes(base64.b64decode(os.environ['OTA_PUBLIC_KEY']))
+    ecu = ECU(store, key)
+    can = CanRPC(CAN_IDS[ecu_id])
+    while True:
+        request = can.receive(CAN_IDS[ecu_id])
+        if request:
+            params = request.get('p') or {}
+            result = ecu.handle_rpc(request.get('m'), params)
+            result['request_id'] = params.get('request_id')
+            can.send(CAN_IDS[ecu_id] + 1, 'response', result)
+
+
+if __name__ == '__main__':
+    main()

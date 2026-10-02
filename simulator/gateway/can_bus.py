@@ -1,3 +1,4 @@
+import os
 import can
 import json
 import time
@@ -5,7 +6,7 @@ import math
 
 # Virtual CAN via UDP Multicast
 # This allows containers to talk without a host network interface
-BUS_CONFIG = {"interface": "udp_multicast", "channel": "239.0.0.1", "bitrate": 500000}
+BUS_CONFIG = {"interface": "udp_multicast", "channel": os.getenv("CAN_CHANNEL", "239.0.0.1"), "bitrate": 500000}
 
 class CanRPC:
     def __init__(self, my_id):
@@ -71,8 +72,19 @@ class CanRPC:
             if msg.arbitration_id != expected_id:
                 continue
 
-            # Process Frame
+            # Reject incomplete/out-of-order messages instead of appending stale bytes.
+            if len(msg.data) < 2:
+                continue
             seq = msg.data[0]
+            if seq == 0:
+                buffer = bytearray()
+                started = True
+                expected_seq = 0
+            if not started or seq != expected_seq:
+                buffer = bytearray()
+                started = False
+                continue
+            expected_seq = (expected_seq + 1) % 255
             more = msg.data[1]
             chunk = msg.data[2:].rstrip(b'\x00') # Remove padding
             

@@ -1,99 +1,42 @@
-import grpc
+"""Control-plane API; persistent records are owned by the artifact registry."""
+import os
 from concurrent import futures
-import time
-import logging
-import json
-import ota_pb2
-import ota_pb2_grpc
-from trace_logger import TraceLogger
+import grpc
+import ota_pb2 as pb
+import ota_pb2_grpc as rpc
 
-TRACER = TraceLogger("control-plane")
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
-
-# In-Memory Storage
-JOBS = {}       # job_id -> {status, vehicle_id, ...}
-MANIFESTS = {}  # manifest_ref -> {json, signature}
-VEHICLES = {}   # vehicle_id -> last_checkin
-
-class OtaControlServicer(ota_pb2_grpc.OtaControlServicer):
-    
-    def CheckIn(self, request, context):
-        vid = request.vehicle_id
-        VEHICLES[vid] = time.time()
-        logging.info(f"CheckIn: {vid}")
-        TRACER.log("VEHICLE_CHECKIN", {"vehicle_id": vid})
-        return ota_pb2.CheckInResponse(ok=True)
-    
-    def RegisterManifest(self, request, context):
-        ref = request.manifest_ref
-        MANIFESTS[ref] = {
-            "json": request.manifest_json,
-            "signature": request.signature
-        }
-        logging.info(f"Registered Manifest: {ref}")
-        return ota_pb2.RegisterManifestResponse(success=True, message="Stored")
-    
-    def UpdateJobStatus(self, request, context):
-        job_id = request.job_id
-        if job_id not in JOBS:
-            JOBS[job_id] = {}
-        JOBS[job_id]["status"] = request.status
-        JOBS[job_id]["details"] = request.details
-        
-        logging.info(f"Job {job_id} -> {request.status}")
-        TRACER.log("JOB_STATUS_UPDATE", {
-            "job_id": job_id, 
-            "status": request.status, 
-            "details": request.details
-        })
-        return ota_pb2.UpdateJobStatusResponse(received=True)
-    
-    def GetManifest(self, request, context):
-        ref = request.manifest_ref
-        if ref in MANIFESTS:
-            data = MANIFESTS[ref]
-            return ota_pb2.GetManifestResponse(
-                found=True,
-                manifest_json=data["json"],
-                signature=data["signature"]
-            )
-        else:
-            return ota_pb2.GetManifestResponse(found=False)
+class OtaControlServicer(rpc.OtaControlServicer):
+    def __init__(self):
+        self.channel = grpc.insecure_channel(os.getenv('ARTIFACT_GRPC_TARGET', 'artifact-server:50052'))
+        self.store = rpc.ArtifactStoreStub(self.channel)
 
     def ConfirmEmergencyStop(self, request, context):
-        logging.warning(f"EMERGENCY STOP CONFIRMED by {request.vehicle_id}")
-        TRACER.log("EMERGENCY_STOP_CONFIRMED", {"vehicle_id": request.vehicle_id})
-        return ota_pb2.ConfirmEmergencyStopResponse(acknowledged=True)
+        context.abort(grpc.StatusCode.UNIMPLEMENTED, 'Emergency stop is not implemented')
 
-    def CreateJob(self, request, context):
-        # Simple job creation simulation
-        import uuid
-        job_id = f"job-{uuid.uuid4().hex[:8]}"
-        
-        JOBS[job_id] = {
-            "status": "CREATED",
-            "vehicle_id": request.vehicle_id,
-            "campaign_id": request.campaign_id,
-            "created_at": time.time()
-        }
-        
-        logging.info(f"Created Job {job_id} for {request.vehicle_id} in {request.campaign_id}")
-        TRACER.log("JOB_CREATED", {"job_id": job_id, "vehicle_id": request.vehicle_id, "campaign_id": request.campaign_id})
-        
-        return ota_pb2.CreateJobResponse(job_id=job_id, created=True)
+
+def forward(name):
+    def method(self, request, context):
+        try:
+            return getattr(self.store, name)(request, timeout=10)
+        except grpc.RpcError as error:
+            context.abort(error.code(), error.details())
+    return method
+
+
+for method_name in ('CheckIn', 'RegisterManifest', 'UpdateJobStatus', 'GetManifest',
+                    'CreateJob', 'RegisterVehicle', 'GetVehicle', 'ReportInventory',
+                    'RecordVehicleEvent', 'ListPendingJobs'):
+    setattr(OtaControlServicer, method_name, forward(method_name))
+
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    ota_pb2_grpc.add_OtaControlServicer_to_server(OtaControlServicer(), server)
+    rpc.add_OtaControlServicer_to_server(OtaControlServicer(), server)
     server.add_insecure_port('[::]:50051')
-    logging.info("Control Plane gRPC Server running on port 50051...")
     server.start()
-    try:
-        server.wait_for_termination()
-    except KeyboardInterrupt:
-        server.stop(0)
+    server.wait_for_termination()
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     serve()

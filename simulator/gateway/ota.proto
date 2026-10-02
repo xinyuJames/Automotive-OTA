@@ -3,6 +3,11 @@ syntax = "proto3";
 package ota;
 
 service OtaControl {
+  rpc RegisterVehicle (VehicleRecord) returns (JsonRecord);
+  rpc GetVehicle (VehicleRequest) returns (JsonRecord);
+  rpc ReportInventory (InventoryRecord) returns (CheckInResponse);
+  rpc RecordVehicleEvent (VehicleEvent) returns (CheckInResponse);
+  rpc ListPendingJobs (VehicleRequest) returns (JsonRecord);
   rpc CheckIn (CheckInRequest) returns (CheckInResponse);
   rpc RegisterManifest (RegisterManifestRequest) returns (RegisterManifestResponse);
   rpc UpdateJobStatus (UpdateJobStatusRequest) returns (UpdateJobStatusResponse);
@@ -69,3 +74,29 @@ message CreateJobResponse {
   string job_id = 1;
   bool created = 2;
 }
+
+// Artifact bytes and vehicle records belong to this service, never shared volumes.
+service ArtifactStore {
+  rpc ListReleases (Empty) returns (JsonRecord);
+  rpc ReadFirmware (FirmwareRequest) returns (FirmwareData);
+  rpc PutArtifact (ArtifactData) returns (JsonRecord);
+  rpc RegisterVehicle (VehicleRecord) returns (JsonRecord);
+  rpc GetVehicle (VehicleRequest) returns (JsonRecord);
+  rpc ReportInventory (InventoryRecord) returns (CheckInResponse);
+  rpc RecordVehicleEvent (VehicleEvent) returns (CheckInResponse);
+  rpc CheckIn (CheckInRequest) returns (CheckInResponse);
+  rpc RegisterManifest (RegisterManifestRequest) returns (RegisterManifestResponse);
+  rpc GetManifest (GetManifestRequest) returns (GetManifestResponse);
+  rpc CreateJob (CreateJobRequest) returns (CreateJobResponse);
+  rpc UpdateJobStatus (UpdateJobStatusRequest) returns (UpdateJobStatusResponse);
+  rpc ListPendingJobs (VehicleRequest) returns (JsonRecord);
+}
+message Empty {}
+message JsonRecord { string json = 1; }
+message VehicleRequest { string vehicle_id = 1; }
+message VehicleRecord { string vehicle_id = 1; string profile_json = 2; }
+message InventoryRecord { string vehicle_id = 1; string ecu_id = 2; string inventory_json = 3; }
+message VehicleEvent { string vehicle_id = 1; string event_id = 2; string kind = 3; string details_json = 4; }
+message FirmwareRequest { string ecu_id = 1; string version = 2; }
+message FirmwareData { bytes content = 1; string metadata_json = 2; }
+message ArtifactData { bytes content = 1; string sha256 = 2; }

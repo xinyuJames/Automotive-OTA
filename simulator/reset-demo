@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Stop the demo and reset ECU firmware, vehicle records, downloads, and traces."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+def remove(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def reset_storage(artifacts, vehicle, vehicle_id, store_class, traces):
+    catalog = json.loads((artifacts / 'catalog.json').read_text())
+    initial = {}
+    # Check both initial images before clearing any state.
+    for ecu in ('engine', 'adas'):
+        source = (artifacts / catalog['ecus'][ecu]['versions']['A']['file']).resolve()
+        if not source.is_relative_to(artifacts.resolve()):
+            raise ValueError('Initial firmware must be inside the artifact folder')
+        initial[ecu] = source.read_bytes()
+        if not initial[ecu]:
+            raise ValueError(f'{ecu}: version A is empty')
+        folder = vehicle / f'{ecu}_firmware'
+        if folder.is_symlink():
+            raise ValueError('ECU storage directory must not be a symlink')
+        identity = folder / 'identity.json'
+        if identity.exists() and json.loads(identity.read_text()) != {'vehicle_id': vehicle_id, 'ecu_id': ecu}:
+            raise ValueError(f'{ecu}: storage belongs to another vehicle')
+    for ecu, content in initial.items():
+        folder = vehicle / f'{ecu}_firmware'
+        for name in ('current', 'previous', 'versions', 'staged', 'identity.json', 'identity.json.part'):
+            remove(folder / name)
+        store = store_class(folder, vehicle_id, ecu)
+        store.stage(content, {'version': 'A', 'sha256': hashlib.sha256(content).hexdigest(),
+                             'size': len(content), 'update_type': catalog['ecus'][ecu]['update_type'],
+                             'campaign_id': 'initial-provisioning'})
+        store.activate()
+    remove(vehicle / 'gateway')
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        remove(artifacts / 'data' / ('registry.sqlite3' + suffix))
+    traces.mkdir(parents=True, exist_ok=True)
+    trace_file = traces / 'simulation_trace.jsonl'
+    for path in traces.iterdir():
+        if path != trace_file or path.is_symlink() or not path.is_file():
+            remove(path)
+    trace_file.write_text('')
+
+
+def main():
+    if os.getenv('OTA_RESET_WORKER') == '1':
+        from firmware_store import FirmwareStore
+        vehicle = Path('/reset/vehicle')
+        reset_storage(Path('/reset/artifacts'), vehicle, os.environ['VEHICLE_ID'], FirmwareStore, Path('/reset/traces'))
+        for path in (Path('/reset/traces'), Path('/reset/traces/simulation_trace.jsonl')):
+            os.chown(path, int(os.environ['RESET_UID']), int(os.environ['RESET_GID']), follow_symlinks=False)
+        for ecu in ('engine', 'adas'):
+            folder = vehicle / f'{ecu}_firmware'
+            for path in [folder, *folder.rglob('*')]:
+                os.chown(path, int(os.environ['RESET_UID']), int(os.environ['RESET_GID']), follow_symlinks=False)
+        return
+
+    simulator = Path(__file__).resolve().parent
+    command = ['docker', 'compose', '-f', str(simulator / 'docker-compose.yml')]
+    config = json.loads(subprocess.check_output([*command, 'config', '--format', 'json'], cwd=simulator))
+
+    def mount(service, target):
+        return next(v['source'] for v in config['services'][service]['volumes'] if v['target'] == target and v['type'] == 'bind')
+
+    artifacts = mount('artifact-server', '/repository')
+    vehicle = Path(mount('ecu_engine', '/vehicle/firmware')).parent
+    if Path(mount('ecu_adas', '/vehicle/firmware')) != vehicle / 'adas_firmware' or Path(mount('gateway', '/vehicle/gateway')) != vehicle / 'gateway':
+        raise ValueError('Reset requires the ECUs and gateway to belong to the same vehicle folder')
+    image = config['services']['ecu_engine'].get('image', config['name'] + '-ecu_engine')
+    vehicle_id = config['services']['ecu_engine']['environment']['VEHICLE_ID']
+    subprocess.run(['docker', 'image', 'inspect', image], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([*command, 'down'], cwd=simulator, check=True)
+    traces = simulator / 'traces'
+    traces.mkdir(exist_ok=True)
+    # Use the existing ECU image to remove Docker-owned files without sudo.
+    subprocess.run(['docker', 'run', '--rm', '--network', 'none', '--pull', 'never', '--entrypoint', 'python',
+                    '-e', 'PYTHONPATH=/app', '-e', 'OTA_RESET_WORKER=1', '-e', f'VEHICLE_ID={vehicle_id}',
+                    '-e', f'RESET_UID={os.getuid()}', '-e', f'RESET_GID={os.getgid()}',
+                    '-v', f'{Path(__file__).resolve()}:/reset_demo.py:ro',
+                    '-v', f'{artifacts}:/reset/artifacts', '-v', f'{vehicle}:/reset/vehicle',
+                    '-v', f'{traces}:/reset/traces',
+                    image, '/reset_demo.py'], cwd=simulator, check=True)
+    print('Reset complete: ECUs on A; vehicle records, gateway downloads, and traces cleared. Services are stopped.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, KeyError, OSError, StopIteration, subprocess.CalledProcessError) as error:
+        print(f'Reset failed: {error}', file=sys.stderr)
+        sys.exit(1)

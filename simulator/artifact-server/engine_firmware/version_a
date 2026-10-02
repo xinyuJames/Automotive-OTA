@@ -1,0 +1,6 @@
+# ENGINE demo firmware
+version=A
+feature=Engine torque limit
+configuration=conservative
+
+This readable fixture demonstrates OTA file installation. It is not executable vehicle control code.

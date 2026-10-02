@@ -1,80 +1,97 @@
+# All mutable application data uses explicit host folders. Services do not share
+# writable firmware storage. VEHICLE_ROOT may point to another vehicle directory.
+# Dependency downloads use host networking during builds.
 x-ecu-common: &ecu_common
-  build: ./ecu
-  environment:
-    - VEHICLE_ID=VIN_SIM_0001
-    - OTA_PUBLIC_KEY=BI/ezKPNG+EgSFCMkOnowq8sX8ZSnGZyN06cKtUxiss=
+  build:
+    context: ./ecu
+    network: host
+  environment: &ecu_env
+    VEHICLE_ID: VIN_SIM_0001
+    OTA_PUBLIC_KEY: BI/ezKPNG+EgSFCMkOnowq8sX8ZSnGZyN06cKtUxiss=
+    ECU_STORAGE_DIR: /vehicle/firmware
+    CAN_CHANNEL: 239.0.0.1
+    TRACE_FILE_PATH: /app/traces/simulation_trace.jsonl
 
 services:
   mqtt:
     image: eclipse-mosquitto:latest
-    ports:
-      - "1883:1883"
+    ports: ["1883:1883"]
     volumes:
-      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf
-
-  control-plane:
-    build: ./control-plane
-    ports:
-      - "50051:50051"
-    environment:
-      - FLASK_ENV=development
-    volumes:
-      - ./traces:/app/traces
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./data/mqtt/data:/mosquitto/data
+      - ./data/mqtt/log:/mosquitto/log
 
   artifact-server:
-    build: ./artifact-server
-    ports:
-      - "8082:8082"
+    build:
+      context: .
+      dockerfile: artifact-server/Dockerfile
+      network: host
+    ports: ["8082:8082", "50052:50052"]
+    environment:
+      ARTIFACT_ROOT: /repository
+      ARTIFACT_PUBLIC_URL: http://artifact-server:8082
     volumes:
-      - ota-artifacts:/var/www/html
+      - ./artifact-server:/repository
+
+  control-plane:
+    build:
+      context: ./control-plane
+      network: host
+    ports: ["50051:50051"]
+    environment:
+      ARTIFACT_GRPC_TARGET: artifact-server:50052
+    depends_on: [artifact-server]
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      network: host
     environment:
-      - VEHICLE_URL=http://gateway:8080
-      - MQTT_BROKER=mqtt
-      - CONTROL_PLANE_TARGET=control-plane:50051
-      - ARTIFACT_SERVER_URL=http://artifact-server:8082
-      - VEHICLE_ID=VIN_SIM_0001
-      - OTA_SECRET_KEY=CctIOT758amWJpb0sha1qNHE/HAhhVE7JXzcmWJz9Us=
+      MQTT_BROKER: mqtt
+      CONTROL_PLANE_TARGET: control-plane:50051
+      ARTIFACT_GRPC_TARGET: artifact-server:50052
+      VEHICLE_ID: VIN_SIM_0001
+      OTA_SECRET_KEY: CctIOT758amWJpb0sha1qNHE/HAhhVE7JXzcmWJz9Us=
+      TRACE_FILE_PATH: /app/traces/simulation_trace.jsonl
     volumes:
-      - ota-artifacts:/app/artifacts
+      - ./data/backend/logs:/logs
       - ./traces:/app/traces
-    depends_on: [ gateway, mqtt, control-plane ]
+    depends_on: [gateway, mqtt, control-plane, artifact-server]
 
   ecu_engine:
     <<: *ecu_common
     environment:
-      - VEHICLE_ID=VIN_SIM_0001
-      - ECU_ID=engine
-      - OTA_PUBLIC_KEY=BI/ezKPNG+EgSFCMkOnowq8sX8ZSnGZyN06cKtUxiss=
-    ports: [ "8101:8080" ]
+      <<: *ecu_env
+      ECU_ID: engine
     volumes:
+      - ${VEHICLE_ROOT:-../vehicle_0001}/engine_firmware:/vehicle/firmware
+      - ${VEHICLE_ROOT:-../vehicle_0001}/logs/ecu_engine:/vehicle/logs
       - ./traces:/app/traces
 
   ecu_adas:
     <<: *ecu_common
     environment:
-      - VEHICLE_ID=VIN_SIM_0001
-      - ECU_ID=adas
-      - OTA_PUBLIC_KEY=BI/ezKPNG+EgSFCMkOnowq8sX8ZSnGZyN06cKtUxiss=
-    ports: [ "8102:8080" ]
+      <<: *ecu_env
+      ECU_ID: adas
     volumes:
+      - ${VEHICLE_ROOT:-../vehicle_0001}/adas_firmware:/vehicle/firmware
+      - ${VEHICLE_ROOT:-../vehicle_0001}/logs/ecu_adas:/vehicle/logs
       - ./traces:/app/traces
 
   gateway:
-    build: ./gateway
-    ports: [ "8080:8080" ]
+    build:
+      context: ./gateway
+      network: host
+    ports: ["8080:8080"]
     environment:
-      - VEHICLE_ID=VIN_SIM_0001
-      - ECU_ENGINE_URL=http://ecu_engine:8080
-      - ECU_ADAS_URL=http://ecu_adas:8080
-      - MQTT_BROKER=mqtt
-      - CONTROL_PLANE_TARGET=control-plane:50051
-      - ARTIFACT_SERVER_URL=http://artifact-server:8082
-    depends_on: [ ecu_engine, ecu_adas, mqtt, control-plane ]
+      VEHICLE_ID: VIN_SIM_0001
+      MQTT_BROKER: mqtt
+      CONTROL_PLANE_TARGET: control-plane:50051
+      GATEWAY_STORAGE_DIR: /vehicle/gateway
+      CAN_CHANNEL: 239.0.0.1
+      TRACE_FILE_PATH: /app/traces/simulation_trace.jsonl
+    depends_on: [ecu_engine, ecu_adas, mqtt, control-plane]
     volumes:
+      - ${VEHICLE_ROOT:-../vehicle_0001}/gateway:/vehicle/gateway
+      - ${VEHICLE_ROOT:-../vehicle_0001}/logs/gateway:/vehicle/logs
       - ./traces:/app/traces
-
-volumes:
-  ota-artifacts:

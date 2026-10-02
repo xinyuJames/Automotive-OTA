@@ -1,0 +1,36 @@
+{
+  "ecus": {
+    "engine": {
+      "component_name": "engine_ctrl",
+      "update_type": "FOTA",
+      "versions": {
+        "A": {
+          "file": "engine_firmware/version_a",
+          "release_notes": "Engine torque limit: initial calibration"
+        },
+        "B": {
+          "file": "engine_firmware/version_b",
+          "release_notes": "Engine torque limit: updated demo calibration"
+        }
+      }
+    },
+    "adas": {
+      "component_name": "adas_ctrl",
+      "update_type": "SOTA",
+      "versions": {
+        "A": {
+          "file": "adas_firmware/version_a",
+          "release_notes": "Following distance: initial calibration"
+        },
+        "B": {
+          "file": "adas_firmware/version_b",
+          "release_notes": "Following distance: updated demo calibration"
+        },
+        "C": {
+          "file": "adas_firmware/version_c",
+          "release_notes": "version C adas."
+        }
+      }
+    }
+  }
+}

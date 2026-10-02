@@ -1,0 +1,6 @@
+# ADAS demo firmware
+version=B
+feature=Following distance
+configuration=updated calibration
+
+This readable fixture demonstrates OTA file installation. It is not executable vehicle control code.

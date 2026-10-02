@@ -1,196 +1,140 @@
-import requests, base64, hashlib, os, time, json, uuid
-import paho.mqtt.client as mqtt
-import bsdiff4
-from cryptography.hazmat.primitives.asymmetric import ed25519
+"""Build signed campaigns from catalog firmware through network APIs only."""
+import base64
+import hashlib
+import json
+import os
+import time
+import uuid
 
+import bsdiff4
+import grpc
+import paho.mqtt.client as mqtt
 from cryptography.hazmat.primitives.asymmetric import ed25519
+import ota_pb2 as pb
+import ota_pb2_grpc as rpc
 from trace_logger import TraceLogger
 
-TRACER = TraceLogger("backend")
+VEHICLE_ID = os.getenv('VEHICLE_ID', 'VIN_SIM_0001')
+OPTIONS = [('grpc.max_receive_message_length', 17 * 1024 * 1024),
+           ('grpc.max_send_message_length', 17 * 1024 * 1024)]
+TRACER = TraceLogger('backend')
 
-# Configuration
-VEHICLE_ID = os.getenv("VEHICLE_ID", "VIN_SIM_0001")
-CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://control-plane:50051")
-ARTIFACT_SERVER_URL = os.getenv("ARTIFACT_SERVER_URL", "http://artifact-server:8082")
-MQTT_BROKER = os.getenv("MQTT_BROKER", "mqtt")
-OTA_SECRET_KEY = os.getenv("OTA_SECRET_KEY")
+class Orchestrator:
+    def __init__(self):
+        self.key = ed25519.Ed25519PrivateKey.from_private_bytes(base64.b64decode(os.environ['OTA_SECRET_KEY']))
+        self.store_channel = grpc.insecure_channel(os.getenv('ARTIFACT_GRPC_TARGET', 'artifact-server:50052'), options=OPTIONS)
+        self.cp_channel = grpc.insecure_channel(os.getenv('CONTROL_PLANE_TARGET', 'control-plane:50051'))
+        self.store = rpc.ArtifactStoreStub(self.store_channel)
+        self.cp = rpc.OtaControlStub(self.cp_channel)
+        self.last_offer = None
 
-# Setup Keys
-priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(base64.b64decode(OTA_SECRET_KEY))
+    def sign(self, content):
+        return base64.b64encode(self.key.sign(content)).decode()
 
-def sign_data(data: bytes) -> str:
-    return base64.b64encode(priv_key.sign(data)).decode()
-
-def setup_artifacts(campaign_id):
-    """Generates dummy firmware and delta paths."""
-    print("Generating Artifacts...")
-    base_dir = f"/app/artifacts/{campaign_id}"
-    
-    artifacts_map = {}
-    
-    for ecu in ["engine", "adas"]:
-        ecu_dir = f"{base_dir}/{ecu}"
-        os.makedirs(ecu_dir, exist_ok=True)
-        
-        # Simulate V1 (Base) and V2 (Target)
-        v1_data = b"A" * 4096 
-        v2_data = os.urandom(4096) # Random data for V2
-        
-        # Save V2 full
-        with open(f"{ecu_dir}/full.bin", "wb") as f:
-            f.write(v2_data)
-            
-        # Generate Delta
-        patch = bsdiff4.diff(v1_data, v2_data)
-        with open(f"{ecu_dir}/delta.patch", "wb") as f:
-            f.write(patch)
-            
-        sha256 = hashlib.sha256(v2_data).hexdigest()
-
-        # Sign the hash of the TARGET (v2) firmware
-        signature = priv_key.sign(sha256.encode())
-        sig_b64 = base64.b64encode(signature).decode()
-        
-        artifacts_map[ecu] = {
-            "v2_sha256": sha256,
-            "v2_signature": sig_b64,
-            "v2_size": len(v2_data),
-            "patch_size": len(patch),
-            "delta_url": f"{ARTIFACT_SERVER_URL}/{campaign_id}/{ecu}/delta.patch",
-            "full_url": f"{ARTIFACT_SERVER_URL}/{campaign_id}/{ecu}/full.bin"
-        }
-    return artifacts_map
-
-def create_manifest(campaign_id, artifacts_map):
-    manifest = {
-        "schema_version": "1.0",
-        "campaign_id": campaign_id,
-        "manifest_ref": f"manifest-{campaign_id}",
-        "created_at": time.time(),
-        "expires_at": time.time() + 3600,
-        "targets": [
-            {
-                "ecu_id": "engine",
-                "component_name": "engine_ctrl",
-                "base_version": "1.0",
-                "target_version": "2.0",
-                "artifact_type": "delta",
-                "artifact_url": artifacts_map["engine"]["delta_url"],
-                "artifact_size": artifacts_map["engine"]["patch_size"],
-                "artifact_hash": artifacts_map["engine"]["v2_sha256"], # Target hash
-                "artifact_signature": artifacts_map["engine"]["v2_signature"],
-                "install_order": 1
-            },
-            {
-                "ecu_id": "adas",
-                "component_name": "adas_ctrl",
-                "base_version": "1.0",
-                "target_version": "2.0",
-                "artifact_type": "delta",
-                "artifact_url": artifacts_map["adas"]["delta_url"],
-                "artifact_size": artifacts_map["adas"]["patch_size"],
-                "artifact_hash": artifacts_map["adas"]["v2_sha256"],
-                "artifact_signature": artifacts_map["adas"]["v2_signature"],
-                "install_order": 1
+    def setup_artifacts(self, vehicle):
+        catalog = json.loads(self.store.ListReleases(pb.Empty(), timeout=10).json)
+        targets = []
+        for ecu, component in catalog['ecus'].items():
+            version = component['latest']
+            observed = vehicle.get('ecus', {}).get(ecu, {})
+            installed = observed.get('current_version')
+            if not version:
+                continue
+            if installed and installed.isascii() and installed.isalpha() and (len(installed), installed.upper()) > (len(version), version):
+                continue  # Removing a newer source file must not downgrade this ECU.
+            response = self.store.ReadFirmware(pb.FirmwareRequest(ecu_id=ecu, version=version), timeout=30)
+            metadata = json.loads(response.metadata_json)
+            target_hash = hashlib.sha256(response.content).hexdigest()
+            if metadata['sha256'] != target_hash or metadata['size'] != len(response.content):
+                raise ValueError('Catalog firmware integrity mismatch')
+            if observed.get('sha256') == target_hash and installed == version:
+                continue
+            download = metadata
+            artifact_type = 'full'
+            base = None
+            base_version = observed.get('current_version')
+            if base_version in component['versions']:
+                source = self.store.ReadFirmware(pb.FirmwareRequest(ecu_id=ecu, version=base_version), timeout=30)
+                base = json.loads(source.metadata_json)
+                if hashlib.sha256(source.content).hexdigest() == observed.get('sha256') == base['sha256']:
+                    patch = bsdiff4.diff(source.content, response.content)
+                    download = json.loads(self.store.PutArtifact(pb.ArtifactData(
+                        content=patch, sha256=hashlib.sha256(patch).hexdigest()), timeout=30).json)
+                    artifact_type = 'delta'
+                else:
+                    base = None
+            target = {
+                'ecu_id': ecu, 'component_name': component['component_name'],
+                'target_version': version, 'base_version': base_version,
+                'update_type': component['update_type'], 'release_notes': metadata.get('release_notes', ''),
+                'artifact_type': artifact_type, 'artifact_url': download['url'],
+                'download_sha256': download['sha256'], 'download_size': download['size'],
+                'target_sha256': target_hash, 'target_size': len(response.content),
+                'artifact_signature': self.sign(target_hash.encode()), 'install_order': len(targets) + 1,
             }
-        ],
-        "policy": {
-            "requires_driver_approval": True,
-            "requires_parked": True,
-            "min_battery_soc": 20,
-            "required_gear": "P",
-            "requires_parking_brake": True,
-            "requires_ignition_state": "ON"
+            if artifact_type == 'delta':
+                target.update(base_sha256=base['sha256'], base_size=base['size'], base_url=base['url'])
+            targets.append(target)
+        return targets
+
+    def launch(self):
+        grpc.channel_ready_future(self.store_channel).result(timeout=10)
+        grpc.channel_ready_future(self.cp_channel).result(timeout=10)
+        # Do not overwrite registration or create duplicate unfinished campaigns on restart.
+        pending = json.loads(self.cp.ListPendingJobs(pb.VehicleRequest(vehicle_id=VEHICLE_ID), timeout=10).json)
+        if pending:
+            return pending[0]['campaign_id'], pending[0]['manifest_ref']
+        vehicle = json.loads(self.cp.GetVehicle(pb.VehicleRequest(vehicle_id=VEHICLE_ID), timeout=10).json)
+        targets = self.setup_artifacts(vehicle)
+        if not targets:
+            return None
+        offer = json.dumps(targets, sort_keys=True)
+        if offer == self.last_offer:
+            return None
+        campaign = 'cam-' + uuid.uuid4().hex[:12]
+        manifest = {
+            'schema_version': '1.1', 'vehicle_id': VEHICLE_ID, 'campaign_id': campaign,
+            'manifest_ref': 'manifest-' + campaign, 'created_at': time.time(),
+            'expires_at': time.time() + 86400, 'targets': targets,
+            'policy': {'requires_driver_approval': True, 'requires_parked': True,
+                       'min_battery_soc': 20, 'required_gear': 'P',
+                       'requires_parking_brake': True, 'requires_ignition_state': 'ON'},
         }
-    }
-    
-    # Canonicalize and Sign
-    manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
-    signature = sign_data(manifest_bytes)
-    
-    return {
-        "manifest": manifest,
-        "signature": signature,
-        "manifest_ref": manifest["manifest_ref"]
-    }
+        document = json.dumps(manifest, sort_keys=True)
+        result = self.cp.RegisterManifest(pb.RegisterManifestRequest(
+            manifest_json=document, signature=self.sign(document.encode()),
+            manifest_ref=manifest['manifest_ref']), timeout=10)
+        if not result.success:
+            raise RuntimeError(result.message)
+        self.last_offer = offer
+        TRACER.log('MANIFEST_REGISTERED', {'vehicle_id': VEHICLE_ID, 'campaign_id': campaign})
+        return campaign, manifest['manifest_ref']
 
-def register_manifest_cp(signed_manifest):
-    import grpc
-    import ota_pb2
-    import ota_pb2_grpc
-    
-    target = os.getenv("CONTROL_PLANE_TARGET", "control-plane:50051")
-    print(f"Connecting to Control Plane at {target}...")
-    
-    with grpc.insecure_channel(target) as channel:
-        stub = ota_pb2_grpc.OtaControlStub(channel)
-        req = ota_pb2.RegisterManifestRequest(
-            manifest_json=json.dumps(signed_manifest["manifest"]),
-            signature=signed_manifest["signature"],
-            manifest_ref=signed_manifest["manifest_ref"]
-        )
+
+def monitor_updates(orchestrator, client):
+    while True:
         try:
-            resp = stub.RegisterManifest(req)
-            if resp.success:
-                print(f"Registered Manifest: {signed_manifest['manifest_ref']}")
-                TRACER.log("MANIFEST_REGISTERED", {
-                    "manifest_ref": signed_manifest['manifest_ref'],
-                    "targets": len(signed_manifest['manifest']['targets'])
-                })
-            else:
-                print(f"Registration Failed: {resp.message}")
-        except grpc.RpcError as e:
-            print(f"gRPC Failed: {e}")
-            raise
+            campaign = orchestrator.launch()
+            if campaign:
+                client.publish(f'v1/vehicles/{VEHICLE_ID}/ota/notify', json.dumps({
+                    'campaign_id': campaign[0], 'manifest_ref': campaign[1],
+                }), qos=1)
+        except Exception as error:
+            print(f'Update check failed; retrying in 10 seconds: {error}', flush=True)
+        time.sleep(10)
 
-def publish_notify(mqtt_client, campaign_id, manifest_ref):
-    topic = f"v1/vehicles/{VEHICLE_ID}/ota/notify"
-    payload = {
-        "schema_version": "1.0",
-        "campaign_id": campaign_id,
-        "manifest_ref": manifest_ref,
-        "priority": "normal",
-        "not_before": time.time(),
-        "expires_at": time.time() + 3600,
-        "nonce": str(uuid.uuid4())
-    }
-    mqtt_client.publish(topic, json.dumps(payload))
-    print(f"Published Notification to {topic}")
-    TRACER.log("NOTIFICATION_PUBLISHED", {"topic": topic, "campaign_id": campaign_id})
 
 def main():
-    print("Backend Orchestrator Starting...")
-    time.sleep(5) # Wait for services
-    
-    campaign_id = f"cam-{int(time.time())}"
-    TRACER.log("CAMPAIGN_STARTED", {"campaign_id": campaign_id})
-    
-    # 1. Generate Artifacts
-    artifacts_map = setup_artifacts(campaign_id)
-    
-    # 2. Create & Sign Manifest
-    signed_manifest_data = create_manifest(campaign_id, artifacts_map)
-    
-    # 3. Register with Control Plane
-    register_manifest_cp(signed_manifest_data)
-    
-    # 4. Connect MQTT
+    orchestrator = Orchestrator()
     client = mqtt.Client()
-    client.connect(MQTT_BROKER, 1883, 60)
+    client.connect_async(os.getenv('MQTT_BROKER', 'mqtt'), 1883, 60)
     client.loop_start()
-    
-    # 5. Notify Vehicle
-    time.sleep(2) # Give a moment
-    publish_notify(client, campaign_id, signed_manifest_data["manifest_ref"])
-    
-    print("Campaign Launched. Monitoring...")
-    
-    # Keep alive and handle emergency stop simulation
+    print('Backend ready. Checking for updates every 10 seconds.', flush=True)
     try:
-        while True:
-            time.sleep(10)
-    except KeyboardInterrupt:
+        monitor_updates(orchestrator, client)
+    finally:
         client.loop_stop()
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

@@ -1,178 +1,139 @@
-# Automotive OTA Simulation Platform
+# Automotive OTA simulator
 
-> A high-fidelity, production-grade simulation of an Over-The-Air (OTA) software update system for Software Defined Vehicles (SDV).
+This simulator delivers real files to two simulated ECUs in one car. Each car owns its gateway, installed firmware, update state, and CAN bus. The demo firmware is readable text; installing it proves file delivery and version tracking, not execution of real vehicle control code.
 
-## Overview
+From this directory, start the services with:
 
-This project simulates a complete end-to-end OTA architecture, mirroring the complexity of real-world automotive systems. It is designed to demonstrate:
-
-* **Separation of Concerns**: Distinct Control Plane, Data Plane, and Event Plane.
-* **Automotive Constraints**: Simulation of low-speed CAN bus networks, binary delta patching, and resource-constrained ECUs.
-* **Safety & Security**: Implementation of The Update Framework (TUF) principles, including manifest signing, artifact verification, and A/B partition rollback.
-
-## 🏗️ System Architecture
-
-The system is divided into two primary contexts: the **Cloud Infrastructure** and the **Vehicle Edge**.
-
-```kroki-mermaid {display-width=600px display-align=center}
-graph TD
-    subgraph "Cloud Infrastructure"
-        BE[Backend Orchestrator]
-        CP["Control Plane (gRPC)"]
-        AS["Artifact Server (HTTP)"]
-        MQ[MQTT Broker]
-  
-        BE -->|Publish Campaign| CP
-        BE -->|Upload Artifacts| AS
-        BE -->|Notify| MQ
-    end
-
-    subgraph "Vehicle Edge"
-        GW[Gateway / OTA Agent]
-        HMI[Head Unit UI]
-  
-        subgraph "CAN Bus Network"
-            ECU1[ECU: Engine]
-            ECU2[ECU: ADAS]
-        end
-  
-        GW -->|Poll/Job| CP
-        GW -->|Download| AS
-        MQ -.->|Wake Up| GW
-  
-        GW -->|"Diagnostics (UDS)"| ECU1
-        GW -->|"Diagnostics (UDS)"| ECU2
-        HMI -- User Approval --> GW
-    end
-
-    style BE fill:#e1f5fe,stroke:#01579b
-    style CP fill:#e1f5fe,stroke:#01579b
-    style AS fill:#e1f5fe,stroke:#01579b
-    style GW fill:#fff3e0,stroke:#e65100
-    style ECU1 fill:#e8f5e9,stroke:#2e7d32
-    style ECU2 fill:#e8f5e9,stroke:#2e7d32
-
+```bash
+docker compose up --build
 ```
 
-### Component Deep Dive
+Open http://localhost:8080. The OTA page shows versions read from the ECUs. Click **Upgrade to newest** to approve the current signed campaign. The **Car registration** page saves vehicle details and features, records crash/diagnostic events, and displays installed versions and update history. Crash data must be submitted through that page or API; no crash sensor or CARLA integration is implemented.
 
-| Component                 | Tech Stack    | Responsibility                                                                                                                           |
-| :------------------------ | :------------ | :--------------------------------------------------------------------------------------------------------------------------------------- |
-| **Backend**         | Python        | Orchestrates campaigns, generates `bsdiff4` binary deltas, signs manifests using Ed25519 keys.                                         |
-| **Control Plane**   | gRPC (Python) | The authoritative source of truth. Handles job creation, state tracking, and policy enforcement (e.g., "Is vehicle allowed to update?"). |
-| **Gateway**         | Python, Flask | The Master OTA Agent. It bridges the internet (HTTP/gRPC) and the internal vehicle network (CAN). Manages the update state machine.      |
-| **Artifact Server** | HTTP          | A simple CDN simulation hosting encrypted/signed firmware binaries and delta patches.                                                    |
-| **ECUs**            | Python        | Simulated target devices with Dual-Bank (A/B) storage. They receive binary streams over virtual CAN and simulate flashing/booting.       |
+## Repeat the demo from the beginning
 
----
+From `simulator/`, run:
 
-## 🔄 OTA Workflow
-
-The following sequence diagram illustrates the "Happy Path" of a successful firmware update.
-
-```kroki-mermaid {display-width=600px display-align=center}
-sequenceDiagram
-    autonumber
-    participant BE as Backend
-    participant CP as Control Plane
-    participant MQ as MQTT Broker
-    participant GW as Gateway
-    participant ECU as Target ECU
-
-    Note over BE, CP: 1. Campaign Started
-    BE->>CP: Register Manifest & Campaign
-    BE->>MQ: Publish "Update Available"
-  
-    Note over GW: 2. Notification
-    MQ-->>GW: Wake Up / Notify
-    GW->>CP: Create Job (CheckIn)
-    CP-->>GW: Job Created (ID: job-123)
-  
-    Note over GW: 3. Confirmation
-    GW->>CP: Get Manifest
-    GW->>GW: Verify Ed25519 Signature
-    GW->>CP: Update Status: WAITING_FOR_APPROVAL
-  
-    Note over GW: 4. User Consent
-    GW->>GW: Wait for HMI Approval
-  
-    Note over GW: 5. Download
-    GW->>CP: Update Status: DOWNLOADING
-    GW->>BE: Download Artifact (HTTP)
-    GW->>GW: Verify SHA256 Hash
-  
-    Note over GW, ECU: 6. Installation (CAN Bus)
-    GW->>CP: Update Status: INSTALLING
-    GW->>ECU: UDS Request Download
-    GW->>ECU: Stream Binary Data
-    ECU-->>GW: Transfer Complete
-  
-    Note over ECU: 7. Validation
-    ECU->>ECU: Verify Signature
-    ECU->>ECU: Switch Active Partition (A->B)
-    ECU-->>GW: Reboot Success
-  
-    Note over GW: 8. Completion
-    GW->>CP: Job Succeeded
+```bash
+./reset-demo
 ```
 
----
+This stops the demo, restores both ECUs to **A**, deletes the registry database (vehicle records, jobs, approvals, and events), removes gateway state and downloaded files, and clears old traces while keeping an empty `simulator/traces/simulation_trace.jsonl`. Initial registration is reloaded from `registrations/VIN_SIM_0001.json` on the next startup. Firmware source files, published blobs, the catalog, and service logs outside `simulator/traces/` are preserved.
 
-## 🛡️ Security & Resilience
+It does not build or restart services. Start again with:
 
-### Trust Chain
+```bash
+docker compose up --build
+```
 
-1. **Root of Trust**: The Backend holds the private signing keys.
-2. **Manifest Signing**: Every update campaign generates a Manifest containing hashes of all artifacts, signed with the Backend's private key.
-3. **Gateway Verification**: The Gateway has the public key pinned. It validates the Manifest signature before initiating *any* downloads.
-4. **Artifact Integrity**: Downloaded files are hashed and compared against the verified Manifest.
+From the repository root, use `./simulator/reset-demo`. The reset uses the existing ECU image to handle Docker-owned files, so run the simulator at least once before using it.
 
-### A/B Partitioning & Rollback
+## Live traces
 
-To prevent "bricking" vehicles, ECUs implement an A/B banking strategy:
+The backend, gateway, and ECUs append campaign, state-transition, verification, activation, and confirmation events to `simulator/traces/simulation_trace.jsonl`. After reset, this file stays empty until new events occur. From `simulator/`, follow it with `tail -F traces/simulation_trace.jsonl`.
 
-* **Slot A**: Current Active Firmware.
-* **Slot B**: Update Target.
-* **Rollback**: If the simulated new firmware fails to "boot" (simulated via chaos testing flags), the ECU watchdog automatically swaps back to Slot A and reports failure.
+## Service boundaries
 
----
+```text
+Backend --gRPC--> Artifact server: read catalog/firmware, publish immutable artifacts
+Backend --gRPC--> Control plane --gRPC--> Artifact server: manifests and jobs
+Backend --MQTT--> Vehicle gateway: update notification
+Vehicle gateway --gRPC--> Control plane: jobs, registration, inventory, history
+Vehicle gateway --HTTP--> Artifact server: firmware and delta downloads
+Vehicle gateway --CAN--> Engine ECU / ADAS ECU: programming and inventory
+```
 
-## 🚀 Getting Started
+These are the existing services; the artifact server now also owns a SQLite registry. No other service mounts its filesystem or opens its database. The control plane exposes the existing gRPC API and forwards persistent record operations to the registry. The backend has no artifact volume. Firmware never reaches an ECU through a shared backend directory.
 
-### Prerequisites
+The supplied networking is for this local simulator: gRPC and HTTP are plaintext, MQTT allows anonymous clients, and signing keys are demo keys. It is not configured as a public Internet deployment. CAN is simulated using UDP multicast, not a complete UDS/ISO-TP implementation.
 
-* docker
-* docker compose
+## Visible storage
 
-### Running the Simulation
+All application state uses explicit host bind mounts; there is no `ota-artifacts` Docker named volume. Container paths are just mount points for these visible directories:
 
-1. **Start Services**:
-   ```bash
-   docker compose up --build
-   ```
-2. **Access Dashboard**:
-   Open [http://localhost:8080](http://localhost:8080) to view the Vehicle HMI.
-   * Observe the "Update Available" notification.
-   * Click "Install Now" to approve.
-3. **Monitor Progress**:
-   The Dashboard will show real-time progress as the Gateway downloads artifacts and streams them to the ECUs.
+| Host path (relative to Automotive-OTA) | Owner and content |
+| --- | --- |
+| `simulator/artifact-server/engine_firmware/version_a`, `version_b` | Engine source releases |
+| `simulator/artifact-server/adas_firmware/version_a`, `version_b` | ADAS source releases |
+| `simulator/artifact-server/catalog.json` | ECU descriptions, SOTA/FOTA classification, optional release notes |
+| `simulator/artifact-server/registrations/VIN_SIM_0001.json` | Initial vehicle registration; imported only if that vehicle is absent |
+| `simulator/artifact-server/data/registry.sqlite3` | Persistent vehicles, observed ECU inventory, manifests, jobs, approvals, crash/diagnostic events, version identities |
+| `simulator/artifact-server/data/blobs/<sha256>` | Published full firmware, base images, and patches, addressed by content hash |
+| `vehicle_0001/engine_firmware/` | Engine ECU installation storage |
+| `vehicle_0001/adas_firmware/` | ADAS ECU installation storage |
+| `vehicle_0001/gateway/` | This car's persisted job/approval state and verified download cache |
+| `vehicle_0001/logs/` | Separate gateway and ECU logs |
+| `simulator/data/` | Backend logs and MQTT runtime directories |
 
-### Directory Structure
+In each ECU directory, inspect:
 
-* `backend/`: Cloud services (Orchestrator, Signer).
-* `control-plane/`: gRPC Server definition and implementation.
-* `gateway/`: Vehicle-side logic (OTA Agent, HMI, CAN Bridge).
-* `ecu/`: Simulated hardware targets.
-* `traces/`: Shared volume for simulation logs (jsonl).
-* `ota.proto`: Unified gRPC protocol definition.
+```text
+identity.json                       vehicle ID and ECU ID
+current/firmware.bin                 actual installed firmware
+current/metadata.json                version, measured hash, size, update type
+previous/firmware.bin                previous installed firmware, after an update
+versions/<hash>-<id>/                retained complete versions
+staged/                             verified candidate before activation
+```
 
-## 🐛 Troubleshooting
+`current` and `previous` are relative directory symlinks. Activation atomically redirects `current` to a complete verified version directory. The ECU reads back actual bytes when it reports inventory. The gateway does not mount either ECU's installation directory.
 
-**"Not in waiting state" Error**
+The supplied `vehicle_0001` was provisioned once with independent version A copies. Changing a source file on the artifact server does **not** change installed ECU files. After approval and a successful update, both `current/firmware.bin` files match the corresponding artifact-server `version_b`, and `previous/firmware.bin` retains A. The folder represents vehicle ID `VIN_SIM_0001` throughout the services.
 
-* **Cause**: The Gateway failed to create a Job in the Control Plane, often due to a protocol mismatch.
-* **Fix**: Ensure `ota.proto` is synchronized across all services and rebuild using `docker compose up --build`.
+## Catalog and version generation
 
-**Logs**
+`backend/orchestrator.py` no longer generates random firmware. Every 10 seconds it reads available releases and vehicle inventory through gRPC, fetches real firmware bytes, and signs a vehicle-specific manifest when newer releases are available. If the reported installed version/hash matches an available source release, it generates and uploads a delta; otherwise it selects a full image. Both download and final firmware have separate signed hashes and sizes.
 
-* Streaming structure logs are available in `traces/simulation_trace.jsonl`.
+The gateway verifies downloaded bytes, checks the installed base for a delta, reconstructs and verifies the final image, and transfers it over CAN. The installation handler passes the prepared bytes to the ECU and records its confirmation response, without repeating gateway hash/version comparisons. The ECU still checks the transferred bytes before activation, and each acknowledgement is checked for success. Failed activation leaves the current file untouched and reports `FAILED`, not a fictitious rollback.
+
+To publish a subsequent version, add a nonempty file named `version_c`, `version_d`, etc. to the relevant ECU folder. The artifact server discovers these filenames on each request; no catalog edit or service restart is needed. Names use lowercase letters, ordered A through Z, then AA, AB, and so on. Files with other names (including temporary files with extensions) are ignored. Finish writing a release before moving it into place under its final name.
+
+Versions are selected independently for each ECU. If both ECUs run B and only `adas_firmware/version_c` is added, the next manifest targets only ADAS C; engine stays on B. The newest available version is selected, so several files added together produce one update to the newest version. Removing a newer source does not trigger a downgrade.
+
+`catalog.json` still supplies component names, SOTA/FOTA labels, and optional version-specific release notes. Filename discovery determines available versions and the latest version; its old `latest` setting is no longer used. Published version contents remain immutable: use a new filename/version instead of changing an already-published release.
+
+An unfinished campaign is kept until completion; a new file does not silently change a manifest already awaiting approval. The backend then checks for further updates. It avoids repeatedly creating the same failed offer during one backend run; restart the backend if you deliberately want to retry it.
+
+
+Registration data and installed observations are distinct. Changing the vehicle profile cannot set an installed version. Installed inventory is reported by the vehicle gateway after querying its ECUs. Profiles, crashes, SOTA/FOTA inventory, and update outcomes survive service restarts. The read API returns the latest 100 jobs/events per vehicle; older entries remain in SQLite.
+
+## Local interfaces
+
+- `POST /api/approve` on the gateway approves the specific current manifest.
+- `GET/POST /api/registration` reads or edits this gateway's vehicle profile: `make`, `model`, `model_year`, `vehicle_type`, and a list of `features`.
+- `POST /api/vehicle/events` records `{ "kind": "crash", "event_id": "unique-id", "details": { "description": "..." } }`. Kind can also be `diagnostic`; supplying a stable event ID makes retries idempotent.
+- `GET /api/status` reports actual observed current/previous versions plus the proposed update.
+- gRPC services are declared in `ota.proto`. Artifact gRPC is port 50052; control-plane gRPC is 50051. HTTP port 8082 serves only `/blobs/<sha256>`, not database or registration files.
+
+Rollback and Force stop buttons remain placeholders. Previous firmware preservation is implemented; automatic rollback of an already-activated multi-ECU campaign is not. File installation does not load code into CARLA. The database supports multiple vehicle IDs, but the supplied Compose file still runs one vehicle: adding another requires its own gateway, ECU storage, IDs and CAN multicast channel.
+
+## Validation
+
+Build the images with `docker compose build`, then run from the repository root:
+
+```bash
+docker run --rm --network none -v "$PWD:/repo:ro" -e PYTHONPATH=/app -e PYTHONDONTWRITEBYTECODE=1 simulator-gateway python /repo/simulator/tests/test_storage_flow.py
+python3 simulator/tests/run_integration.py
+python3 -B simulator/tests/test_demo_reset.py
+```
+
+The integration test launches an isolated Compose project with disposable copies and no published ports. It verifies delta and full installation, file bytes, previous versions, approval/restart behavior, failure propagation, registration/crash persistence, and job history. It does not upgrade your actual `vehicle_0001`.
+
+## Implementation file summary
+
+| Files | Change |
+| --- | --- |
+| `artifact-server/server.py`, `requirements.txt`, `Dockerfile` | gRPC registry/catalog/upload service, SQLite persistence, HTTP blob downloads |
+| `artifact-server/catalog.json`, `registrations/VIN_SIM_0001.json`, four `*_firmware/version_*` files | Real A/B source fixtures, release metadata, initial registration |
+| `backend/orchestrator.py` | Network-only release creation from catalog files and observed vehicle versions |
+| `control-plane/main.py` | Forward persistent record operations through gRPC; stop API explicitly unimplemented |
+| `ota.proto` and its `backend/`, `gateway/`, `control-plane/` copies | Artifact transfer, vehicle profile, inventory, events, and pending-job contracts |
+| `ecu/ecu_app.py`, new `ecu/firmware_store.py`, `ecu/Dockerfile` | Verified CAN programming, visible file installation, current/previous metadata and read-back |
+| `gateway/ota_agent.py`, `downloader.py`, `control_plane_client.py`, `mqtt_client.py` | Real full/delta downloads, matching CAN replies, persistent approval/recovery state, discovery and inventory reporting |
+| `gateway/can_bus.py`, `ecu/can_bus.py` | Configurable per-vehicle multicast channel and fragment-order checks |
+| `gateway/gateway_app.py`, `templates/index.html`, `static/js/app.js` | Actual ECU versions, registration editor, crash/diagnostic records and history |
+| `docker-compose.yml`, repository `.gitignore` | Explicit service-owned host storage; remove shared artifact named volume; ignore runtime caches/database/logs |
+| `../vehicle_0001/` | Independently provisioned A firmware, ECU identity/metadata, documented installation folders |
+| `reset-demo`, `tests/test_demo_reset.py` | One-command A→B demo reset and temporary-fixture regression tests |
+| `tests/test_storage_flow.py`, `tests/run_integration.py` | Focused regression tests and isolated full-stack verification |
+| This README and `../ECU_OTA_IMPLEMENTATION_PLAN.md` | Architecture/storage guide, commands, implementation summary, updated bug statuses |
